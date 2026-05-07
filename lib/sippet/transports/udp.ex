@@ -181,7 +181,7 @@ defmodule Sippet.Transports.UDP do
         %{socket: socket, family: family, sippet: sippet} = state
       ) do
     Logger.debug([
-      "sending message to #{stringify_hostport(to_host, to_port)}/udp",
+      "[#{state.sippet}][#{transport_label(state)}] sending message to #{stringify_hostport(to_host, to_port)}/udp",
       ", #{inspect(key)}"
     ])
 
@@ -229,6 +229,16 @@ defmodule Sippet.Transports.UDP do
 
   defp stringify_hostport(host, port) do
     "#{host}:#{port}"
+  end
+
+  defp transport_label(%{sippet: sippet, transport_name: tn}) do
+    prefix = Atom.to_string(sippet) <> "_"
+    full = Atom.to_string(tn)
+
+    case String.split(full, prefix, parts: 2) do
+      ["", local] -> local
+      _ -> full
+    end
   end
 
   defp bind_to_device_opts(nil), do: []

@@ -179,7 +179,7 @@ defmodule Sippet.Transports.TCP do
         %{family: family, sippet: sippet} = state
       ) do
     Logger.debug([
-      "sending message to #{stringify_hostport(to_host, to_port)}/tcp",
+      "[#{state.sippet}][#{transport_label(state)}] sending message to #{stringify_hostport(to_host, to_port)}/tcp",
       ", #{inspect(key)}"
     ])
 
@@ -313,5 +313,15 @@ defmodule Sippet.Transports.TCP do
 
   defp stringify_hostport(host, port) do
     "#{host}:#{port}"
+  end
+
+  defp transport_label(%{sippet: sippet, transport_name: tn}) do
+    prefix = Atom.to_string(sippet) <> "_"
+    full = Atom.to_string(tn)
+
+    case String.split(full, prefix, parts: 2) do
+      ["", local] -> local
+      _ -> full
+    end
   end
 end
