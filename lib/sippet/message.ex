@@ -1306,7 +1306,8 @@ defmodule Sippet.Message do
     )
   end
 
-  defp do_parse_header_value({display_name, uri, %{} = parameters}) do
+  defp do_parse_header_value({display_name, uri, %{} = parameters})
+       when is_binary(display_name) and is_binary(uri) do
     case URI.parse(uri) do
       {:ok, uri} ->
         {display_name, uri, parameters}
