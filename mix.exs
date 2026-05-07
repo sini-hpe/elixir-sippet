@@ -40,6 +40,7 @@ defmodule Sippet.Mixfile do
     [
       {:sippet_uri, path: "../sippet_uri"},
       {:gen_state_machine, ">= 3.0.0"},
+      {:telemetry, "~> 1.0"},
 
       # Build the NIF
       {:elixir_make, "~> 0.7", runtime: false},

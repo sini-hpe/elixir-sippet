@@ -8,6 +8,12 @@ defmodule Sippet.Router do
 
   import Sippet, only: [supervisor_name: 1]
 
+  # Telemetry event names (pre-built to avoid allocation on hot path)
+  @event_msg_received [:sippet, :message, :received]
+  @event_msg_sent [:sippet, :message, :sent]
+  @event_msg_parse_error [:sippet, :message, :parse_error]
+  @event_txn_started [:sippet, :transaction, :started]
+
   @doc false
   def handle_transport_message(sippet, iodata, from, source_transport \\ nil)
 
@@ -32,9 +38,20 @@ defmodule Sippet.Router do
          prepared_message <- update_via(message, from),
          prepared_message <- %{prepared_message | source: source_transport},
          :ok <- Message.validate(prepared_message, from) do
+      :telemetry.execute(@event_msg_received, %{byte_size: byte_size(raw)}, %{
+        sippet: sippet,
+        kind: message_kind(prepared_message),
+        method: message_method(prepared_message)
+      })
+
       receive_transport_message(sippet, prepared_message)
     else
       {:error, reason} ->
+        :telemetry.execute(@event_msg_parse_error, %{count: 1}, %{
+          sippet: sippet,
+          reason: reason
+        })
+
         Logger.error(fn ->
           {protocol, address, port} = from
 
@@ -131,18 +148,27 @@ defmodule Sippet.Router do
   def send_transport_message(sippet, message, key) do
     {protocol, host, port} = get_destination(message)
 
-    case Registry.meta(sippet, {:udp_socket, protocol}) do
-      {:ok, {socket, family}} ->
-        # Direct UDP send — bypass GenServer to avoid single-process bottleneck
-        send_udp_direct(socket, family, sippet, message, host, port, key)
+    result =
+      case Registry.meta(sippet, {:udp_socket, protocol}) do
+        {:ok, {socket, family}} ->
+          # Direct UDP send — bypass GenServer to avoid single-process bottleneck
+          send_udp_direct(socket, family, sippet, message, host, port, key)
 
-      :error ->
-        # TCP or other transport — route through GenServer
-        GenServer.call(
-          {:via, Registry, {sippet, {:transport, protocol}}},
-          {:send_message, message, host, port, key}
-        )
-    end
+        :error ->
+          # TCP or other transport — route through GenServer
+          GenServer.call(
+            {:via, Registry, {sippet, {:transport, protocol}}},
+            {:send_message, message, host, port, key}
+          )
+      end
+
+    :telemetry.execute(@event_msg_sent, %{count: 1}, %{
+      sippet: sippet,
+      kind: message_kind(message),
+      method: message_method(message)
+    })
+
+    result
   end
 
   defp send_udp_direct(socket, family, sippet, message, host, port, key) do
@@ -268,6 +294,17 @@ defmodule Sippet.Router do
       supervisor_name(sippet),
       {module, [initial_data, [name: {:via, Registry, {sippet, {:transaction, key}}}]]}
     )
+    |> tap(fn
+      {:ok, _} ->
+        :telemetry.execute(@event_txn_started, %{count: 1}, %{
+          sippet: sippet,
+          kind: :client,
+          method: key.method
+        })
+
+      _ ->
+        :ok
+    end)
   end
 
   defp start_server(
@@ -288,6 +325,17 @@ defmodule Sippet.Router do
       supervisor_name(sippet),
       {module, [initial_data, [name: {:via, Registry, {sippet, {:transaction, key}}}]]}
     )
+    |> tap(fn
+      {:ok, _} ->
+        :telemetry.execute(@event_txn_started, %{count: 1}, %{
+          sippet: sippet,
+          kind: :server,
+          method: key.method
+        })
+
+      _ ->
+        :ok
+    end)
   end
 
   defp get_destination(%Message{target: target}) when is_tuple(target),
@@ -340,4 +388,15 @@ defmodule Sippet.Router do
 
     {protocol, host, port}
   end
+
+  # Telemetry helpers — extract message metadata without allocating new structs
+  defp message_kind(%Message{start_line: %RequestLine{}}), do: :request
+  defp message_kind(%Message{start_line: %StatusLine{}}), do: :response
+
+  defp message_method(%Message{start_line: %RequestLine{method: m}}), do: m
+
+  defp message_method(%Message{start_line: %StatusLine{}, headers: %{cseq: {_, method}}}),
+    do: method
+
+  defp message_method(_), do: :unknown
 end
