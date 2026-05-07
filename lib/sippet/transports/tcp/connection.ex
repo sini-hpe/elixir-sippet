@@ -7,6 +7,10 @@ defmodule Sippet.Transports.TCP.Connection do
 
   require Logger
 
+  @default_idle_timeout 120_000
+  @default_message_timeout 10_000
+  @default_keepalive_interval 0
+
   defstruct socket: nil,
             sippet: nil,
             transport_name: nil,
@@ -14,8 +18,10 @@ defmodule Sippet.Transports.TCP.Connection do
             buffer: <<>>,
             parse_state: :idle,
             timer: nil,
-            idle_timeout: 120_000,
-            message_timeout: 10_000,
+            keepalive_timer: nil,
+            idle_timeout: @default_idle_timeout,
+            message_timeout: @default_message_timeout,
+            keepalive_interval: @default_keepalive_interval,
             active_n: 100
 
   def start_link(opts) do
@@ -44,7 +50,10 @@ defmodule Sippet.Transports.TCP.Connection do
       socket: Keyword.fetch!(opts, :socket),
       sippet: Keyword.fetch!(opts, :sippet),
       transport_name: Keyword.fetch!(opts, :transport_name),
-      peer: Keyword.fetch!(opts, :peer)
+      peer: Keyword.fetch!(opts, :peer),
+      idle_timeout: Keyword.get(opts, :idle_timeout, @default_idle_timeout),
+      message_timeout: Keyword.get(opts, :message_timeout, @default_message_timeout),
+      keepalive_interval: Keyword.get(opts, :keepalive_interval, @default_keepalive_interval)
     }
 
     {:ok, state}
@@ -53,7 +62,7 @@ defmodule Sippet.Transports.TCP.Connection do
   @impl true
   def handle_cast(:activate, state) do
     :inet.setopts(state.socket, [{:active, state.active_n}])
-    {:noreply, set_idle_timer(state)}
+    {:noreply, state |> set_idle_timer() |> maybe_start_keepalive()}
   end
 
   @impl true
@@ -96,6 +105,16 @@ defmodule Sippet.Transports.TCP.Connection do
     {ip, port} = state.peer
     Logger.debug("TCP connection to #{stringify(ip, port)} message timeout")
     {:stop, :normal, state}
+  end
+
+  def handle_info(:keepalive, state) do
+    case :gen_tcp.send(state.socket, "\r\n\r\n") do
+      :ok ->
+        {:noreply, schedule_keepalive(state)}
+
+      {:error, _reason} ->
+        {:stop, :normal, state}
+    end
   end
 
   @impl true
@@ -205,6 +224,38 @@ defmodule Sippet.Transports.TCP.Connection do
     end
 
     %{state | timer: nil}
+  end
+
+  # -- Keep-alive management --
+
+  defp maybe_start_keepalive(%{keepalive_interval: interval} = state)
+       when is_integer(interval) and interval > 0 do
+    schedule_keepalive(state)
+  end
+
+  defp maybe_start_keepalive(state), do: state
+
+  defp schedule_keepalive(%{keepalive_interval: interval} = state)
+       when is_integer(interval) and interval > 0 do
+    cancel_keepalive(state)
+    ref = Process.send_after(self(), :keepalive, interval)
+    %{state | keepalive_timer: ref}
+  end
+
+  defp schedule_keepalive(state), do: state
+
+  defp cancel_keepalive(%{keepalive_timer: nil} = state), do: state
+
+  defp cancel_keepalive(%{keepalive_timer: ref} = state) do
+    Process.cancel_timer(ref)
+
+    receive do
+      :keepalive -> :ok
+    after
+      0 -> :ok
+    end
+
+    %{state | keepalive_timer: nil}
   end
 
   defp stringify(ip, port) when is_tuple(ip) do
