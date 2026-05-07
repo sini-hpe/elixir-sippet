@@ -75,7 +75,7 @@ defmodule Sippet.Router do
 
   defp update_via(%Message{start_line: %RequestLine{}} = request, {_protocol, ip, from_port}) do
     request
-    |> Message.update_header_back(:via, fn
+    |> Message.update_header_front(:via, fn
       {version, protocol, {via_host, via_port}, params} ->
         host = ip |> ip_to_string()
 
