@@ -1462,6 +1462,9 @@ defmodule Sippet.Message do
         :via -> {"Via", true}
         :warning -> {"Warning", true}
         :www_authenticate -> {"WWW-Authenticate", false}
+        :security_client -> {"Security-Client", true}
+        :security_server -> {"Security-Server", true}
+        :security_verify -> {"Security-Verify", true}
         other -> {other, true}
       end
 
