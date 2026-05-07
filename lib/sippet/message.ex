@@ -1401,6 +1401,7 @@ defmodule Sippet.Message do
         :accept_language -> {"Accept-Language", true}
         :alert_info -> {"Alert-Info", true}
         :allow -> {"Allow", true}
+        :allow_events -> {"Allow-Events", true}
         :authentication_info -> {"Authentication-Info", false}
         :authorization -> {"Authorization", false}
         :call_id -> {"Call-ID", true}
@@ -1414,26 +1415,44 @@ defmodule Sippet.Message do
         :cseq -> {"CSeq", true}
         :date -> {"Date", true}
         :error_info -> {"Error-Info", true}
+        :event -> {"Event", true}
         :expires -> {"Expires", true}
         :from -> {"From", true}
+        :history_info -> {"History-Info", true}
         :in_reply_to -> {"In-Reply-To", true}
         :max_forwards -> {"Max-Forwards", true}
         :mime_version -> {"MIME-Version", true}
         :min_expires -> {"Min-Expires", true}
+        :min_se -> {"Min-SE", true}
         :organization -> {"Organization", true}
-        :priority -> {"Priority", true}
+        :p_access_network_info -> {"P-Access-Network-Info", true}
         :p_asserted_identity -> {"P-Asserted-Identity", true}
+        :p_associated_uri -> {"P-Associated-URI", true}
+        :p_called_party_id -> {"P-Called-Party-ID", true}
+        :p_charging_vector -> {"P-Charging-Vector", true}
+        :p_preferred_identity -> {"P-Preferred-Identity", true}
+        :p_served_user -> {"P-Served-User", true}
+        :p_visited_network_id -> {"P-Visited-Network-ID", true}
+        :path -> {"Path", true}
+        :priority -> {"Priority", true}
+        :privacy -> {"Privacy", true}
         :proxy_authenticate -> {"Proxy-Authenticate", false}
         :proxy_authorization -> {"Proxy-Authorization", false}
         :proxy_require -> {"Proxy-Require", true}
+        :rack -> {"RAck", true}
         :reason -> {"Reason", true}
         :record_route -> {"Record-Route", true}
+        :refer_to -> {"Refer-To", true}
+        :referred_by -> {"Referred-By", true}
         :reply_to -> {"Reply-To", true}
         :require -> {"Require", true}
         :retry_after -> {"Retry-After", true}
         :route -> {"Route", true}
+        :rseq -> {"RSeq", true}
         :server -> {"Server", true}
+        :service_route -> {"Service-Route", true}
         :subject -> {"Subject", true}
+        :subscription_state -> {"Subscription-State", true}
         :supported -> {"Supported", true}
         :timestamp -> {"Timestamp", true}
         :to -> {"To", true}
