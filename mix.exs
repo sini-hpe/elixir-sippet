@@ -10,7 +10,8 @@ defmodule Sippet.Mixfile do
       elixir: "~> 1.14",
       build_embedded: Mix.env() == :prod,
       start_permanent: Mix.env() == :prod,
-      # NIF is pre-compiled (priv/sippet_nif.so checked in)
+      compilers: [:elixir_make] ++ Mix.compilers(),
+      make_clean: ["clean"],
       deps: deps(),
       package: package(),
       name: "Sippet",
@@ -38,6 +39,7 @@ defmodule Sippet.Mixfile do
       {:sippet_uri, git: "https://github.com/sini-hpe/elixir-sippet-uri.git", branch: "main-hpe"},
       {:gen_state_machine, ">= 3.0.0"},
       {:telemetry, "~> 1.0"},
+      {:elixir_make, "~> 0.8", runtime: false},
 
       # Docs dependencies
       {:ex_doc, "~> 0.21", only: :dev, runtime: false},
