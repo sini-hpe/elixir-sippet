@@ -131,10 +131,33 @@ defmodule Sippet.Router do
   def send_transport_message(sippet, message, key) do
     {protocol, host, port} = get_destination(message)
 
-    GenServer.cast(
-      {:via, Registry, {sippet, {:transport, protocol}}},
-      {:send_message, message, host, port, key}
-    )
+    case Registry.meta(sippet, {:udp_socket, protocol}) do
+      {:ok, {socket, family}} ->
+        # Direct UDP send — bypass GenServer to avoid single-process bottleneck
+        send_udp_direct(socket, family, sippet, message, host, port, key)
+
+      :error ->
+        # TCP or other transport — route through GenServer
+        GenServer.call(
+          {:via, Registry, {sippet, {:transport, protocol}}},
+          {:send_message, message, host, port, key}
+        )
+    end
+  end
+
+  defp send_udp_direct(socket, family, sippet, message, host, port, key) do
+    with {:ok, to_ip} <- host |> String.to_charlist() |> :inet.getaddr(family),
+         iodata <- Message.to_iodata(message),
+         :ok <- :gen_udp.send(socket, {to_ip, port}, iodata) do
+      :ok
+    else
+      {:error, reason} ->
+        Logger.warning("udp direct send error for #{host}:#{port}: #{inspect(reason)}")
+
+        if key != nil do
+          receive_transport_error(sippet, key, reason)
+        end
+    end
   end
 
   @doc false

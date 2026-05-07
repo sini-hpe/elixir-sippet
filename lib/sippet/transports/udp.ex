@@ -131,6 +131,9 @@ defmodule Sippet.Transports.UDP do
           apply_xfrm_policy(socket, family)
         end
 
+        # Expose socket + family so any process can send directly (bypass GenServer)
+        Registry.put_meta(name, {:udp_socket, transport_name}, {socket, family})
+
         Logger.debug(
           "#{inspect(self())} started transport " <>
             "#{stringify_sockname(socket)}/udp (#{transport_name})"
