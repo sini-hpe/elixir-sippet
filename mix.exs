@@ -35,7 +35,7 @@ defmodule Sippet.Mixfile do
 
   defp deps do
     [
-      {:sippet_uri, path: "../sippet_uri"},
+      {:sippet_uri, git: "https://github.com/sini-hpe/elixir-sippet-uri.git", branch: "main-hpe"},
       {:gen_state_machine, ">= 3.0.0"},
       {:telemetry, "~> 1.0"},
 
