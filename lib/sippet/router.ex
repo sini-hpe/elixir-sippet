@@ -9,25 +9,28 @@ defmodule Sippet.Router do
   import Sippet, only: [supervisor_name: 1]
 
   @doc false
-  def handle_transport_message(sippet, iodata, from) when is_list(iodata) do
+  def handle_transport_message(sippet, iodata, from, source_transport \\ nil)
+
+  def handle_transport_message(sippet, iodata, from, source_transport) when is_list(iodata) do
     binary =
       iodata
       |> IO.iodata_to_binary()
 
-    handle_transport_message(sippet, binary, from)
+    handle_transport_message(sippet, binary, from, source_transport)
   end
 
-  def handle_transport_message(_sippet, "", _from), do: :ok
+  def handle_transport_message(_sippet, "", _from, _source_transport), do: :ok
 
-  def handle_transport_message(sippet, "\n" <> rest, from),
-    do: handle_transport_message(sippet, rest, from)
+  def handle_transport_message(sippet, "\n" <> rest, from, source_transport),
+    do: handle_transport_message(sippet, rest, from, source_transport)
 
-  def handle_transport_message(sippet, "\r\n" <> rest, from),
-    do: handle_transport_message(sippet, rest, from)
+  def handle_transport_message(sippet, "\r\n" <> rest, from, source_transport),
+    do: handle_transport_message(sippet, rest, from, source_transport)
 
-  def handle_transport_message(sippet, raw, from) do
+  def handle_transport_message(sippet, raw, from, source_transport) do
     with {:ok, message} <- parse_message(raw),
          prepared_message <- update_via(message, from),
+         prepared_message <- %{prepared_message | source: source_transport},
          :ok <- Message.validate(prepared_message, from) do
       receive_transport_message(sippet, prepared_message)
     else
@@ -64,9 +67,11 @@ defmodule Sippet.Router do
   defp ip_to_string(ip) when is_binary(ip), do: ip
   defp ip_to_string(ip) when is_tuple(ip), do: :inet.ntoa(ip) |> to_string()
 
-  defp update_via(%Message{start_line: %RequestLine{}} = request, {:wss, _ip, _from_port}), do: request
+  defp update_via(%Message{start_line: %RequestLine{}} = request, {:wss, _ip, _from_port}),
+    do: request
 
-  defp update_via(%Message{start_line: %RequestLine{}} = request, {:ws, _ip, _from_port}), do: request
+  defp update_via(%Message{start_line: %RequestLine{}} = request, {:ws, _ip, _from_port}),
+    do: request
 
   defp update_via(%Message{start_line: %RequestLine{}} = request, {_protocol, ip, from_port}) do
     request
@@ -232,7 +237,8 @@ defmodule Sippet.Router do
         _otherwise -> Transactions.Client.NonInvite
       end
 
-    initial_data = Transactions.Client.State.new(outgoing_request, key, sippet)
+    timers = Sippet.Timers.get_timers(sippet)
+    initial_data = Transactions.Client.State.new(outgoing_request, key, sippet, timers)
 
     DynamicSupervisor.start_child(
       supervisor_name(sippet),
@@ -251,7 +257,8 @@ defmodule Sippet.Router do
         _otherwise -> Transactions.Server.NonInvite
       end
 
-    initial_data = Transactions.Server.State.new(incoming_request, key, sippet)
+    timers = Sippet.Timers.get_timers(sippet)
+    initial_data = Transactions.Server.State.new(incoming_request, key, sippet, timers)
 
     DynamicSupervisor.start_child(
       supervisor_name(sippet),

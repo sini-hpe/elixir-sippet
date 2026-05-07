@@ -12,27 +12,34 @@ defmodule Sippet.Transactions.Client.State do
           request: Message.request(),
           key: key,
           sippet: atom,
+          timers: map,
           extras: %{}
         ]
 
   defstruct request: nil,
             key: nil,
             sippet: nil,
+            timers: %{},
             extras: %{}
 
   @doc """
   Creates the client transaction state.
+
+  `timers` is an optional map of timer overrides. See `Sippet.Timers`
+  for key names and defaults.
   """
   def new(
         %Message{start_line: %RequestLine{}} = outgoing_request,
         %Transactions.Client.Key{} = key,
-        sippet
+        sippet,
+        timers \\ %{}
       )
       when is_atom(sippet) do
     %__MODULE__{
       request: outgoing_request,
       key: key,
-      sippet: sippet
+      sippet: sippet,
+      timers: timers
     }
   end
 end

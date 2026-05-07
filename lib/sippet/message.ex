@@ -19,7 +19,8 @@ defmodule Sippet.Message do
   defstruct start_line: nil,
             headers: %{},
             body: nil,
-            target: nil
+            target: nil,
+            source: nil
 
   @type uri :: URI.t()
 
@@ -622,7 +623,7 @@ defmodule Sippet.Message do
          userinfo: "foo"}, version: {2, 0}}, target: nil}
 
   """
-  @spec put_new_lazy_header(t, header, (() -> value)) :: t
+  @spec put_new_lazy_header(t, header, (-> value)) :: t
   def put_new_lazy_header(message, header, fun) when is_function(fun, 0) do
     case has_header?(message, header) do
       true -> message
@@ -1626,14 +1627,14 @@ defmodule Sippet.Message do
 
   defp do_auth_parameters([{name, value} | tail], [])
        when name in ["username", "realm", "nonce", "uri", "response", "cnonce", "opaque"],
-    do: do_auth_parameters(tail, [[name, "=\"", value, "\""]])
+       do: do_auth_parameters(tail, [[name, "=\"", value, "\""]])
 
   defp do_auth_parameters([{name, value} | tail], []),
     do: do_auth_parameters(tail, [[name, "=", value]])
 
   defp do_auth_parameters([{name, value} | tail], result)
        when name in ["username", "realm", "nonce", "uri", "response", "cnonce", "opaque"],
-    do: do_auth_parameters(tail, [[",", name, "=\"", value, "\""] | result])
+       do: do_auth_parameters(tail, [[",", name, "=\"", value, "\""] | result])
 
   defp do_auth_parameters([{name, value} | tail], result),
     do: do_auth_parameters(tail, [[",", name, "=", value] | result])

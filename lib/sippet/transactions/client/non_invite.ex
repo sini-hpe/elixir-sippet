@@ -11,24 +11,28 @@ defmodule Sippet.Transactions.Client.NonInvite do
 
   require Logger
 
-  @t2 4_000
-  @timer_e 500
-  @timer_f 64 * @timer_e
+  # RFC 3261 §17.1.2 defaults (overridable via data.timers)
+  @default_t2 4_000
+  @default_timer_e 500
+  @default_timer_f 64 * @default_timer_e
+  @default_timer_k 5_000
 
-  # timer K is 5s
-  @timer_k 5_000
+  defp timer(data, name, default), do: Map.get(data.timers, name, default)
 
   defp start_timers(%State{request: request, extras: extras} = data) do
+    timer_f = timer(data, :timer_f, @default_timer_f)
+    timer_e = timer(data, :timer_e, @default_timer_e)
+
     extras =
       extras
-      |> put(:deadline_timer, send_after(self(), :deadline, @timer_f))
+      |> put(:deadline_timer, send_after(self(), :deadline, timer_f))
 
     extras =
       if reliable?(request, data) do
         extras
       else
         extras
-        |> put(:retry_timer, send_after(self(), @timer_e, @timer_e))
+        |> put(:retry_timer, send_after(self(), timer_e, timer_e))
       end
 
     %{data | extras: extras}
@@ -81,8 +85,10 @@ defmodule Sippet.Transactions.Client.NonInvite do
   def trying(:info, :deadline, data),
     do: timeout(data)
 
-  def trying(:info, last_delay, data) when is_integer(last_delay),
-    do: retry(min(last_delay * 2, @t2), data)
+  def trying(:info, last_delay, data) when is_integer(last_delay) do
+    t2 = timer(data, :t2, @default_t2)
+    retry(min(last_delay * 2, t2), data)
+  end
 
   def trying(:cast, {:incoming_response, response}, data) do
     receive_response(response, data)
@@ -105,8 +111,10 @@ defmodule Sippet.Transactions.Client.NonInvite do
   def proceeding(:info, :deadline, data),
     do: timeout(data)
 
-  def proceeding(:info, last_delay, data) when is_integer(last_delay),
-    do: retry(@t2, data)
+  def proceeding(:info, last_delay, data) when is_integer(last_delay) do
+    t2 = timer(data, :t2, @default_t2)
+    retry(t2, data)
+  end
 
   def proceeding(:cast, {:incoming_response, response}, data) do
     receive_response(response, data)
@@ -129,7 +137,8 @@ defmodule Sippet.Transactions.Client.NonInvite do
     if reliable?(request, data) do
       {:stop, :normal, data}
     else
-      {:keep_state, data, [{:state_timeout, @timer_k, nil}]}
+      timer_k = timer(data, :timer_k, @default_timer_k)
+      {:keep_state, data, [{:state_timeout, timer_k, nil}]}
     end
   end
 

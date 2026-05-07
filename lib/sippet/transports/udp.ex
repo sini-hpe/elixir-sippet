@@ -18,7 +18,8 @@ defmodule Sippet.Transports.UDP do
 
   defstruct socket: nil,
             family: :inet,
-            sippet: nil
+            sippet: nil,
+            transport_name: nil
 
   @doc """
   Starts the UDP transport.
@@ -66,6 +67,12 @@ defmodule Sippet.Transports.UDP do
           {"0.0.0.0", :inet}
       end
 
+    transport_name =
+      case Keyword.fetch(options, :transport_name) do
+        {:ok, tn} when is_atom(tn) -> tn
+        _ -> :udp
+      end
+
     ip =
       case resolve_name(address, family) do
         {:ok, ip} ->
@@ -76,29 +83,30 @@ defmodule Sippet.Transports.UDP do
                 ":address contains an invalid IP or DNS name, got: #{inspect(reason)}"
       end
 
-    GenServer.start_link(__MODULE__, {name, ip, port, family})
+    GenServer.start_link(__MODULE__, {name, ip, port, family, transport_name})
   end
 
   @impl true
-  def init({name, ip, port, family}) do
-    Sippet.register_transport(name, :udp, false)
+  def init({name, ip, port, family, transport_name}) do
+    Sippet.register_transport(name, transport_name, :udp, false)
 
-    {:ok, nil, {:continue, {name, ip, port, family}}}
+    {:ok, nil, {:continue, {name, ip, port, family, transport_name}}}
   end
 
   @impl true
-  def handle_continue({name, ip, port, family}, nil) do
+  def handle_continue({name, ip, port, family, transport_name}, nil) do
     case :gen_udp.open(port, [:binary, {:active, true}, {:ip, ip}, family]) do
       {:ok, socket} ->
         Logger.debug(
           "#{inspect(self())} started transport " <>
-            "#{stringify_sockname(socket)}/udp"
+            "#{stringify_sockname(socket)}/udp (#{transport_name})"
         )
 
         state = %__MODULE__{
           socket: socket,
           family: family,
-          sippet: name
+          sippet: name,
+          transport_name: transport_name
         }
 
         {:noreply, state}
@@ -111,13 +119,21 @@ defmodule Sippet.Transports.UDP do
 
         Process.sleep(10_000)
 
-        {:noreply, nil, {:continue, {name, ip, port, family}}}
+        {:noreply, nil, {:continue, {name, ip, port, family, transport_name}}}
     end
   end
 
   @impl true
-  def handle_info({:udp, _socket, from_ip, from_port, packet}, %{sippet: sippet} = state) do
-    Sippet.Router.handle_transport_message(sippet, packet, {:udp, from_ip, from_port})
+  def handle_info(
+        {:udp, _socket, from_ip, from_port, packet},
+        %{sippet: sippet, transport_name: transport_name} = state
+      ) do
+    Sippet.Router.handle_transport_message(
+      sippet,
+      packet,
+      {:udp, from_ip, from_port},
+      transport_name
+    )
 
     {:noreply, state}
   end

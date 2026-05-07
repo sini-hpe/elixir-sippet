@@ -7,11 +7,12 @@ defmodule Sippet.Transactions.Client.Invite do
   alias Sippet.Message.StatusLine
   alias Sippet.Transactions.Client.State
 
-  # optimization: transaction ends in 37.8s
-  @timer_a 600
-  @timer_b 64 * @timer_a
-  # timer D should be > 32s
-  @timer_d 32_000
+  # RFC 3261 §17.1.1 defaults (overridable via data.timers)
+  @default_timer_a 500
+  @default_timer_b 64 * @default_timer_a
+  @default_timer_d 32_000
+
+  defp timer(data, name, default), do: Map.get(data.timers, name, default)
 
   defp retry({past_wait, passed_time}, %State{request: request} = data) do
     send_request(request, data)
@@ -61,18 +62,23 @@ defmodule Sippet.Transactions.Client.Invite do
   def calling(:enter, _old_state, %State{request: request} = data) do
     send_request(request, data)
 
+    timer_a = timer(data, :timer_a, @default_timer_a)
+    timer_b = timer(data, :timer_b, @default_timer_b)
+
     actions =
       if reliable?(request, data) do
-        [{:state_timeout, @timer_b, {@timer_b, @timer_b}}]
+        [{:state_timeout, timer_b, {timer_b, timer_b}}]
       else
-        [{:state_timeout, @timer_a, {@timer_a, @timer_a}}]
+        [{:state_timeout, timer_a, {timer_a, timer_a}}]
       end
 
     {:keep_state_and_data, actions}
   end
 
   def calling(:state_timeout, {_past_wait, passed_time} = time_event, data) do
-    if passed_time >= @timer_b do
+    timer_b = timer(data, :timer_b, @default_timer_b)
+
+    if passed_time >= timer_b do
       timeout(data)
     else
       retry(time_event, data)
@@ -132,7 +138,8 @@ defmodule Sippet.Transactions.Client.Invite do
     if reliable?(request, data) do
       {:stop, :normal, data}
     else
-      {:keep_state, data, [{:state_timeout, @timer_d, nil}]}
+      timer_d = timer(data, :timer_d, @default_timer_d)
+      {:keep_state, data, [{:state_timeout, timer_d, nil}]}
     end
   end
 

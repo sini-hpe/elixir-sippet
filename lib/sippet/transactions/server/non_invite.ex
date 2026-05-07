@@ -6,7 +6,10 @@ defmodule Sippet.Transactions.Server.NonInvite do
   alias Sippet.Message.StatusLine
   alias Sippet.Transactions.Server.State
 
-  @timer_j 32_000
+  # RFC 3261 §17.2.2 defaults (overridable via data.timers)
+  @default_timer_j 32_000
+
+  defp timer(data, name, default), do: Map.get(data.timers, name, default)
 
   def trying(:enter, _old_state, %State{request: request} = data) do
     receive_request(request, data)
@@ -62,7 +65,8 @@ defmodule Sippet.Transactions.Server.NonInvite do
     if reliable?(request, data) do
       {:stop, :normal, data}
     else
-      {:keep_state_and_data, [{:state_timeout, @timer_j, nil}]}
+      timer_j = timer(data, :timer_j, @default_timer_j)
+      {:keep_state_and_data, [{:state_timeout, timer_j, nil}]}
     end
   end
 

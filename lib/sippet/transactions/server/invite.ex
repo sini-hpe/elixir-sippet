@@ -7,13 +7,14 @@ defmodule Sippet.Transactions.Server.Invite do
   alias Sippet.Message.StatusLine
   alias Sippet.Transactions.Server.State
 
-  @t2 4_000
-  @before_trying 200
-  @timer_g 500
-  @timer_h 64 * @timer_g
+  # RFC 3261 §17.2.1 defaults (overridable via data.timers)
+  @default_t2 4_000
+  @default_before_trying 200
+  @default_timer_g 500
+  @default_timer_h 64 * @default_timer_g
+  @default_timer_i 5_000
 
-  # timer I is 5s
-  @timer_i 5_000
+  defp timer(data, name, default), do: Map.get(data.timers, name, default)
 
   def init(%State{key: key, sippet: sippet} = data) do
     # add an alias for incoming ACK requests for status codes != 200
@@ -26,14 +27,16 @@ defmodule Sippet.Transactions.Server.Invite do
          {past_wait, passed_time},
          %State{extras: %{last_response: last_response}} = data
        ) do
+    t2 = timer(data, :t2, @default_t2)
     send_response(last_response, data)
-    new_delay = min(past_wait * 2, @t2)
+    new_delay = min(past_wait * 2, t2)
     {:keep_state_and_data, [{:state_timeout, new_delay, {new_delay, passed_time + new_delay}}]}
   end
 
   def proceeding(:enter, _old_state, %State{request: request} = data) do
     receive_request(request, data)
-    {:keep_state_and_data, [{:state_timeout, @before_trying, :still_trying}]}
+    before_trying = timer(data, :before_trying, @default_before_trying)
+    {:keep_state_and_data, [{:state_timeout, before_trying, :still_trying}]}
   end
 
   def proceeding(:state_timeout, :still_trying, %State{request: request} = data) do
@@ -71,11 +74,14 @@ defmodule Sippet.Transactions.Server.Invite do
     do: unhandled_event(event_type, event_content, data)
 
   def completed(:enter, _old_state, %State{request: request} = data) do
+    timer_g = timer(data, :timer_g, @default_timer_g)
+    timer_h = timer(data, :timer_h, @default_timer_h)
+
     actions =
       if reliable?(request, data) do
-        [{:state_timeout, @timer_h, {@timer_h, @timer_h}}]
+        [{:state_timeout, timer_h, {timer_h, timer_h}}]
       else
-        [{:state_timeout, @timer_g, {@timer_g, @timer_g}}]
+        [{:state_timeout, timer_g, {timer_g, timer_g}}]
       end
 
     {:keep_state_and_data, actions}
@@ -83,8 +89,9 @@ defmodule Sippet.Transactions.Server.Invite do
 
   def completed(:state_timeout, time_event, data) do
     {_past_wait, passed_time} = time_event
+    timer_h = timer(data, :timer_h, @default_timer_h)
 
-    if passed_time >= @timer_h do
+    if passed_time >= timer_h do
       timeout(data)
     else
       retry(time_event, data)
@@ -119,7 +126,8 @@ defmodule Sippet.Transactions.Server.Invite do
     if reliable?(request, data) do
       {:stop, :normal, data}
     else
-      {:keep_state_and_data, [{:state_timeout, @timer_i, nil}]}
+      timer_i = timer(data, :timer_i, @default_timer_i)
+      {:keep_state_and_data, [{:state_timeout, timer_i, nil}]}
     end
   end
 

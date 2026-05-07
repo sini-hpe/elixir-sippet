@@ -130,28 +130,54 @@ defmodule Sippet do
       when is_atom(sippet) do
     {_version, protocol, _host_and_port, _params} = via
 
-    case Registry.lookup(sippet, {:transport, protocol}) do
-      [{_, reliable}] ->
+    case Registry.meta(sippet, {:protocol_reliable, protocol}) do
+      {:ok, reliable} ->
         reliable
 
-      _ ->
-        raise ArgumentError, message: "protocol not registered"
+      :error ->
+        # Fallback: try direct transport lookup (backward compat)
+        case Registry.lookup(sippet, {:transport, protocol}) do
+          [{_, reliable}] -> reliable
+          _ -> raise ArgumentError, message: "protocol not registered"
+        end
     end
   end
 
   @doc """
-  Registers a transport for a given protocol.
+  Registers a named transport.
+
+  `transport_name` is the unique name used to address this transport instance
+  (e.g. `:udp4`, `:udp6`).  `protocol` is the SIP transport protocol atom
+  (`:udp`, `:tcp`, `:tls`).  `reliable` indicates whether the transport
+  provides reliable delivery.
+
+  Multiple transports may share the same protocol (e.g. one for IPv4, one
+  for IPv6).
   """
-  @spec register_transport(sippet, atom, boolean) :: :ok | {:error, :already_registered}
-  def register_transport(sippet, protocol, reliable)
-      when is_atom(sippet) and is_atom(protocol) and is_boolean(reliable) do
-    case Registry.register(sippet, {:transport, protocol}, reliable) do
+  @spec register_transport(sippet, atom, atom, boolean) :: :ok | {:error, :already_registered}
+  def register_transport(sippet, transport_name, protocol, reliable)
+      when is_atom(sippet) and is_atom(transport_name) and is_atom(protocol) and
+             is_boolean(reliable) do
+    case Registry.register(sippet, {:transport, transport_name}, reliable) do
       {:ok, _} ->
+        Registry.put_meta(sippet, {:protocol_reliable, protocol}, reliable)
+        Registry.put_meta(sippet, {:transport_protocol, transport_name}, protocol)
         :ok
 
       {:error, {:already_registered, _}} ->
         {:error, :already_registered}
     end
+  end
+
+  @doc """
+  Registers a transport for a given protocol (backward-compatible).
+
+  The transport name defaults to the protocol atom.
+  """
+  @spec register_transport(sippet, atom, boolean) :: :ok | {:error, :already_registered}
+  def register_transport(sippet, protocol, reliable)
+      when is_atom(sippet) and is_atom(protocol) and is_boolean(reliable) do
+    register_transport(sippet, protocol, protocol, reliable)
   end
 
   @doc """

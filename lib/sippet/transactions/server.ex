@@ -32,12 +32,42 @@ defmodule Sippet.Transactions.Server do
         {:ok, initial_state, data}
       end
 
-      defp send_response(response, %State{key: key, sippet: sippet} = data) do
+      defp send_response(response, %State{key: key, sippet: sippet, request: request} = data) do
+        response = ensure_response_target(response, request)
         extras = data.extras |> Map.put(:last_response, response)
         data = %{data | extras: extras}
         Sippet.Router.send_transport_message(sippet, response, key)
         data
       end
+
+      # When the response has no explicit target but the originating request
+      # carries a source transport, derive the response target from the Via
+      # header and route it back through the same transport.
+      defp ensure_response_target(%{target: nil} = response, %{source: source})
+           when source != nil do
+        case response.headers do
+          %{via: [{_version, _protocol, {host, port}, params} | _]} ->
+            host =
+              case params do
+                %{"received" => received} -> received
+                _ -> host
+              end
+
+            port =
+              case params do
+                %{"rport" => ""} -> port
+                %{"rport" => rport} -> String.to_integer(rport)
+                _ -> port
+              end
+
+            %{response | target: {source, host, port}}
+
+          _ ->
+            response
+        end
+      end
+
+      defp ensure_response_target(response, _request), do: response
 
       defp receive_request(request, %State{key: key, sippet: sippet}),
         do: Sippet.Router.to_core(sippet, :receive_request, [request, key])
