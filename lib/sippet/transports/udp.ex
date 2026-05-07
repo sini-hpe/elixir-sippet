@@ -80,6 +80,12 @@ defmodule Sippet.Transports.UDP do
         _ -> nil
       end
 
+    security_protected =
+      case Keyword.fetch(options, :security_protected) do
+        {:ok, true} -> true
+        _ -> false
+      end
+
     ip =
       case resolve_name(address, family) do
         {:ok, ip} ->
@@ -90,22 +96,29 @@ defmodule Sippet.Transports.UDP do
                 ":address contains an invalid IP or DNS name, got: #{inspect(reason)}"
       end
 
-    GenServer.start_link(__MODULE__, {name, ip, port, family, transport_name, dev})
+    GenServer.start_link(
+      __MODULE__,
+      {name, ip, port, family, transport_name, dev, security_protected}
+    )
   end
 
   @impl true
-  def init({name, ip, port, family, transport_name, dev}) do
+  def init({name, ip, port, family, transport_name, dev, security_protected}) do
     Sippet.register_transport(name, transport_name, :udp, false)
 
-    {:ok, nil, {:continue, {name, ip, port, family, transport_name, dev}}}
+    {:ok, nil, {:continue, {name, ip, port, family, transport_name, dev, security_protected}}}
   end
 
   @impl true
-  def handle_continue({name, ip, port, family, transport_name, dev}, nil) do
+  def handle_continue({name, ip, port, family, transport_name, dev, security_protected}, nil) do
     sock_opts = [:binary, {:active, true}, {:ip, ip}, family] ++ bind_to_device_opts(dev)
 
     case :gen_udp.open(port, sock_opts) do
       {:ok, socket} ->
+        if security_protected do
+          apply_xfrm_policy(socket, family)
+        end
+
         Logger.debug(
           "#{inspect(self())} started transport " <>
             "#{stringify_sockname(socket)}/udp (#{transport_name})"
@@ -129,7 +142,8 @@ defmodule Sippet.Transports.UDP do
 
         Process.sleep(10_000)
 
-        {:noreply, nil, {:continue, {name, ip, port, family, transport_name, dev}}}
+        {:noreply, nil,
+         {:continue, {name, ip, port, family, transport_name, dev, security_protected}}}
     end
   end
 
@@ -207,4 +221,69 @@ defmodule Sippet.Transports.UDP do
 
   defp bind_to_device_opts(nil), do: []
   defp bind_to_device_opts(dev) when is_binary(dev), do: [{:bind_to_device, dev}]
+
+  # Sets IP_XFRM_POLICY on the socket to require IPSec (ESP) protection for
+  # incoming packets. Unprotected traffic is silently dropped by the kernel.
+  # Requires CAP_NET_ADMIN.
+  @ip_xfrm_policy 17
+  @ipproto_esp 50
+  @xfrm_inf 0xFFFFFFFFFFFFFFFF
+
+  defp apply_xfrm_policy(socket, family) do
+    {level, family_byte} = xfrm_level_and_family(family)
+    policy_bin = build_xfrm_policy(family_byte)
+
+    case :inet.setopts(socket, [{:raw, level, @ip_xfrm_policy, policy_bin}]) do
+      :ok ->
+        Logger.info("IPSec policy (require ESP) applied to #{stringify_sockname(socket)}/udp")
+
+      {:error, reason} ->
+        Logger.error(
+          "Failed to apply IPSec policy to #{stringify_sockname(socket)}/udp: #{inspect(reason)}. " <>
+            "Ensure the process has CAP_NET_ADMIN capability."
+        )
+    end
+  end
+
+  defp xfrm_level_and_family(:inet), do: {0, 2}
+  defp xfrm_level_and_family(:inet6), do: {41, 10}
+
+  defp build_xfrm_policy(family_byte) do
+    # struct xfrm_userpolicy_info (168 bytes)
+    # 56 bytes, family at offset 40
+    sel = <<0::size(320), family_byte::little-16, 0::size(120)>>
+
+    lft =
+      <<
+        @xfrm_inf::little-64,
+        @xfrm_inf::little-64,
+        @xfrm_inf::little-64,
+        @xfrm_inf::little-64,
+        # 64 bytes
+        0::size(256)
+      >>
+
+    # 32 bytes
+    curlft = <<0::size(256)>>
+    # priority(4) + index(4) + dir=0(1) + action=0(1) + flags=0(1) + share=0(1) + pad(4)
+    # 16 bytes
+    tail = <<0::size(128)>>
+    # 168 bytes
+    policy_info = sel <> lft <> curlft <> tail
+
+    # struct xfrm_user_tmpl (64 bytes)
+    # id: daddr(16) + spi(4) + proto(1) + pad(3) = 24
+    tmpl_id = <<0::size(128), 0::size(32), @ipproto_esp::8, 0::size(24)>>
+    # family(2) + pad(2) + saddr(16) + reqid(4) + mode(1) + share(1) + optional(1) + pad(1)
+    # + aalgos(4) + ealgos(4) + calgos(4) = 40
+    tmpl_rest =
+      <<family_byte::little-16, 0::size(16), 0::size(128), 0::size(32), 0::8, 0::8, 0::8, 0::8,
+        0xFFFFFFFF::little-32, 0xFFFFFFFF::little-32, 0xFFFFFFFF::little-32>>
+
+    # 64 bytes
+    tmpl = tmpl_id <> tmpl_rest
+
+    # 232 bytes
+    policy_info <> tmpl
+  end
 end
