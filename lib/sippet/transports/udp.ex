@@ -175,9 +175,8 @@ defmodule Sippet.Transports.UDP do
   end
 
   @impl true
-  def handle_call(
+  def handle_cast(
         {:send_message, message, to_host, to_port, key},
-        _from,
         %{socket: socket, family: family, sippet: sippet} = state
       ) do
     Logger.debug([
@@ -198,7 +197,7 @@ defmodule Sippet.Transports.UDP do
         end
     end
 
-    {:reply, :ok, state}
+    {:noreply, state}
   end
 
   @impl true

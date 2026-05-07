@@ -131,7 +131,7 @@ defmodule Sippet.Router do
   def send_transport_message(sippet, message, key) do
     {protocol, host, port} = get_destination(message)
 
-    GenServer.call(
+    GenServer.cast(
       {:via, Registry, {sippet, {:transport, protocol}}},
       {:send_message, message, host, port, key}
     )

@@ -242,9 +242,8 @@ defmodule Sippet.Transports.TCP do
   # -- Sending --
 
   @impl true
-  def handle_call(
+  def handle_cast(
         {:send_message, message, to_host, to_port, key},
-        _from,
         %{family: family, sippet: sippet} = state
       ) do
     Logger.debug([
@@ -256,7 +255,7 @@ defmodule Sippet.Transports.TCP do
          {:ok, conn_pid, state} <- get_or_connect(state, to_ip, to_port),
          iodata <- Message.to_iodata(message),
          :ok <- Connection.send_message(conn_pid, iodata) do
-      {:reply, :ok, state}
+      {:noreply, state}
     else
       {:error, reason} ->
         Logger.warning("tcp transport error for #{to_host}:#{to_port}: #{inspect(reason)}")
@@ -265,7 +264,7 @@ defmodule Sippet.Transports.TCP do
           Sippet.Router.receive_transport_error(sippet, key, reason)
         end
 
-        {:reply, :ok, state}
+        {:noreply, state}
     end
   end
 
