@@ -10,8 +10,7 @@ defmodule Sippet.Mixfile do
       elixir: "~> 1.14",
       build_embedded: Mix.env() == :prod,
       start_permanent: Mix.env() == :prod,
-      # Add the make compiler
-      compilers: [:elixir_make] ++ Mix.compilers(),
+      # NIF is pre-compiled (priv/sippet_nif.so checked in)
       deps: deps(),
       package: package(),
       name: "Sippet",
@@ -24,9 +23,7 @@ defmodule Sippet.Mixfile do
         "coveralls.detail": :test,
         "coveralls.post": :test,
         "coveralls.html": :test
-      ],
-      make_clean: ["clean"],
-      make_cwd: "c_src"
+      ]
     ]
   end
 
@@ -41,9 +38,6 @@ defmodule Sippet.Mixfile do
       {:sippet_uri, path: "../sippet_uri"},
       {:gen_state_machine, ">= 3.0.0"},
       {:telemetry, "~> 1.0"},
-
-      # Build the NIF
-      {:elixir_make, "~> 0.7", runtime: false},
 
       # Docs dependencies
       {:ex_doc, "~> 0.21", only: :dev, runtime: false},
