@@ -38,7 +38,7 @@ defmodule Sippet.Mixfile do
 
   defp deps do
     [
-      {:sippet_uri, "~> 0.1"},
+      {:sippet_uri, path: "../sippet_uri"},
       {:gen_state_machine, ">= 3.0.0"},
 
       # Build the NIF
