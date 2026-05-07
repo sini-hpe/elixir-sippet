@@ -34,6 +34,16 @@ defmodule Sippet.Router do
     do: handle_transport_message(sippet, rest, from, source_transport)
 
   def handle_transport_message(sippet, raw, from, source_transport) do
+    if sharded_transactions?() do
+      # Sharded mode: cast to parse pool for async parsing + shard routing.
+      # This frees the transport process to receive the next packet immediately.
+      sharded_handler().handle_transport_message(sippet, raw, from, source_transport)
+    else
+      handle_transport_message_legacy(sippet, raw, from, source_transport)
+    end
+  end
+
+  defp handle_transport_message_legacy(sippet, raw, from, source_transport) do
     with {:ok, message} <- parse_message(raw),
          prepared_message <- update_via(message, from),
          prepared_message <- %{prepared_message | source: source_transport},
@@ -118,6 +128,14 @@ defmodule Sippet.Router do
 
   @doc false
   def receive_transport_error(sippet, transaction_key, reason) do
+    if sharded_transactions?() do
+      sharded_handler().receive_transport_error(sippet, transaction_key, reason)
+    else
+      receive_transport_error_legacy(sippet, transaction_key, reason)
+    end
+  end
+
+  defp receive_transport_error_legacy(sippet, transaction_key, reason) do
     case Registry.lookup(sippet, {:transaction, transaction_key}) do
       [] ->
         Logger.warning(fn ->
@@ -200,6 +218,14 @@ defmodule Sippet.Router do
 
   @doc false
   def send_transaction_request(sippet, %Message{start_line: %RequestLine{}} = outgoing_request) do
+    if sharded_transactions?() do
+      sharded_handler().send_transaction_request(sippet, outgoing_request)
+    else
+      send_transaction_request_legacy(sippet, outgoing_request)
+    end
+  end
+
+  defp send_transaction_request_legacy(sippet, outgoing_request) do
     transaction = Transactions.Client.Key.new(outgoing_request)
 
     # Create a new client transaction now. The request is passed to the
@@ -222,6 +248,14 @@ defmodule Sippet.Router do
 
   @doc false
   def send_transaction_response(sippet, %Message{start_line: %StatusLine{}} = outgoing_response) do
+    if sharded_transactions?() do
+      sharded_handler().send_transaction_response(sippet, outgoing_response)
+    else
+      send_transaction_response_legacy(sippet, outgoing_response)
+    end
+  end
+
+  defp send_transaction_response_legacy(sippet, outgoing_response) do
     server_key = Transactions.Server.Key.new(outgoing_response)
 
     case Registry.lookup(sippet, {:transaction, server_key}) do
@@ -399,4 +433,55 @@ defmodule Sippet.Router do
     do: method
 
   defp message_method(_), do: :unknown
+
+  # -- Sharded-transactions feature flag --------------------------------
+
+  defp sharded_transactions? do
+    Application.get_env(:sip, :use_sharded_transactions, false)
+  end
+
+  defp sharded_handler do
+    Application.get_env(:sip, :sharded_handler, Sip.ShardedRouter)
+  end
+
+  # -- Public parsing helpers (reused by ParseWorker) -------------------
+
+  @doc """
+  Parse, validate and prepare a raw SIP message for routing.
+
+  Returns `{:ok, message}` on success, `{:error, reason}` on failure.
+  Emits telemetry events for received messages and parse errors.
+  """
+  def parse_and_prepare(sippet, raw, from, source_transport) do
+    with {:ok, message} <- parse_message(raw),
+         prepared <- update_via(message, from),
+         prepared <- %{prepared | source: source_transport},
+         :ok <- Message.validate(prepared, from) do
+      :telemetry.execute(@event_msg_received, %{byte_size: byte_size(raw)}, %{
+        sippet: sippet,
+        kind: message_kind(prepared),
+        method: message_method(prepared)
+      })
+
+      {:ok, prepared}
+    else
+      {:error, reason} ->
+        :telemetry.execute(@event_msg_parse_error, %{count: 1}, %{
+          sippet: sippet,
+          reason: reason
+        })
+
+        Logger.error(fn ->
+          {protocol, address, port} = from
+
+          [
+            "discarded message from ",
+            "#{ip_to_string(address)}:#{port}/#{protocol}: ",
+            "#{inspect(reason)}"
+          ]
+        end)
+
+        {:error, reason}
+    end
+  end
 end
