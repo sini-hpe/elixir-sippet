@@ -36,14 +36,7 @@ defmodule Sippet.Transactions.Client do
         do: Sippet.Router.to_core(sippet, :receive_response, [response, key])
 
       def shutdown(reason, %State{key: key, sippet: sippet} = data) do
-        demote? =
-          try do
-            reason == :timeout and Sippet.Options.get(sippet, :demote_peer_timeout)
-          rescue
-            _ -> false
-          end
-
-        if demote? do
+        if reason == :timeout and Sippet.Options.get(sippet, :demote_peer_timeout) do
           Logger.info("client transaction #{inspect(key)} shutdown: #{reason}")
         else
           Logger.warning("client transaction #{inspect(key)} shutdown: #{reason}")
