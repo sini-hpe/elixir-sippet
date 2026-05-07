@@ -37,7 +37,11 @@ defmodule Sippet.Options do
 
   defp init_table do
     if :ets.whereis(@table) == :undefined do
-      :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
+      try do
+        :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
+      rescue
+        ArgumentError -> :ok
+      end
     end
 
     :ok
