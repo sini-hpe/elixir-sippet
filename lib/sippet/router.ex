@@ -144,6 +144,7 @@ defmodule Sippet.Router do
         raise RuntimeError, "Core not initialized"
 
       {:ok, module} ->
+        Process.put(:sippet_calling, sippet)
         apply(module, fun, args)
     end
   end
