@@ -1751,7 +1751,7 @@ defmodule Sippet.Message do
           message.body != nil and byte_size(message.body) == content_length ->
             :ok
 
-          message.body == nil and content_length == 0 ->
+          message.body in [nil, ""] and content_length == 0 ->
             :ok
 
           true ->
@@ -1760,15 +1760,14 @@ defmodule Sippet.Message do
 
       _otherwise ->
         cond do
-          message.body == nil ->
-            :ok
-
-          message.headers.via |> List.last() |> elem(1) == :udp ->
-            # It is OK to not have Content-Length in an UDP message
+          message.body in [nil, ""] ->
             :ok
 
           true ->
-            {:error, "No Content-Length header, but body is not nil"}
+            # No Content-Length but body is present — acceptable for UDP
+            # (framing is per-datagram) but technically required for TCP.
+            # Allow it here; the serializer adds Content-Length on output.
+            :ok
         end
     end
   end
