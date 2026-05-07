@@ -86,6 +86,12 @@ defmodule Sippet.Transports.UDP do
         _ -> false
       end
 
+    dscp =
+      case Keyword.fetch(options, :dscp) do
+        {:ok, v} when is_integer(v) and v >= 0 and v <= 63 -> v
+        _ -> nil
+      end
+
     ip =
       case resolve_name(address, family) do
         {:ok, ip} ->
@@ -98,20 +104,26 @@ defmodule Sippet.Transports.UDP do
 
     GenServer.start_link(
       __MODULE__,
-      {name, ip, port, family, transport_name, dev, security_protected}
+      {name, ip, port, family, transport_name, dev, security_protected, dscp}
     )
   end
 
   @impl true
-  def init({name, ip, port, family, transport_name, dev, security_protected}) do
+  def init({name, ip, port, family, transport_name, dev, security_protected, dscp}) do
     Sippet.register_transport(name, transport_name, :udp, false)
 
-    {:ok, nil, {:continue, {name, ip, port, family, transport_name, dev, security_protected}}}
+    {:ok, nil,
+     {:continue, {name, ip, port, family, transport_name, dev, security_protected, dscp}}}
   end
 
   @impl true
-  def handle_continue({name, ip, port, family, transport_name, dev, security_protected}, nil) do
-    sock_opts = [:binary, {:active, true}, {:ip, ip}, family] ++ bind_to_device_opts(dev)
+  def handle_continue(
+        {name, ip, port, family, transport_name, dev, security_protected, dscp},
+        nil
+      ) do
+    sock_opts =
+      [:binary, {:active, true}, {:ip, ip}, family] ++
+        bind_to_device_opts(dev) ++ dscp_opts(dscp)
 
     case :gen_udp.open(port, sock_opts) do
       {:ok, socket} ->
@@ -143,7 +155,7 @@ defmodule Sippet.Transports.UDP do
         Process.sleep(10_000)
 
         {:noreply, nil,
-         {:continue, {name, ip, port, family, transport_name, dev, security_protected}}}
+         {:continue, {name, ip, port, family, transport_name, dev, security_protected, dscp}}}
     end
   end
 
@@ -221,6 +233,9 @@ defmodule Sippet.Transports.UDP do
 
   defp bind_to_device_opts(nil), do: []
   defp bind_to_device_opts(dev) when is_binary(dev), do: [{:bind_to_device, dev}]
+
+  defp dscp_opts(nil), do: []
+  defp dscp_opts(dscp) when is_integer(dscp), do: [{:tos, Bitwise.bsl(dscp, 2)}]
 
   # Sets IP_XFRM_POLICY on the socket to require IPSec (ESP) protection for
   # incoming packets. Unprotected traffic is silently dropped by the kernel.
