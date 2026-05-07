@@ -19,7 +19,8 @@ defmodule Sippet.Transports.UDP do
   defstruct socket: nil,
             family: :inet,
             sippet: nil,
-            transport_name: nil
+            transport_name: nil,
+            dev: nil
 
   @doc """
   Starts the UDP transport.
@@ -73,6 +74,12 @@ defmodule Sippet.Transports.UDP do
         _ -> :udp
       end
 
+    dev =
+      case Keyword.fetch(options, :dev) do
+        {:ok, dev} when is_binary(dev) and dev != "" -> dev
+        _ -> nil
+      end
+
     ip =
       case resolve_name(address, family) do
         {:ok, ip} ->
@@ -83,19 +90,21 @@ defmodule Sippet.Transports.UDP do
                 ":address contains an invalid IP or DNS name, got: #{inspect(reason)}"
       end
 
-    GenServer.start_link(__MODULE__, {name, ip, port, family, transport_name})
+    GenServer.start_link(__MODULE__, {name, ip, port, family, transport_name, dev})
   end
 
   @impl true
-  def init({name, ip, port, family, transport_name}) do
+  def init({name, ip, port, family, transport_name, dev}) do
     Sippet.register_transport(name, transport_name, :udp, false)
 
-    {:ok, nil, {:continue, {name, ip, port, family, transport_name}}}
+    {:ok, nil, {:continue, {name, ip, port, family, transport_name, dev}}}
   end
 
   @impl true
-  def handle_continue({name, ip, port, family, transport_name}, nil) do
-    case :gen_udp.open(port, [:binary, {:active, true}, {:ip, ip}, family]) do
+  def handle_continue({name, ip, port, family, transport_name, dev}, nil) do
+    sock_opts = [:binary, {:active, true}, {:ip, ip}, family] ++ bind_to_device_opts(dev)
+
+    case :gen_udp.open(port, sock_opts) do
       {:ok, socket} ->
         Logger.debug(
           "#{inspect(self())} started transport " <>
@@ -106,7 +115,8 @@ defmodule Sippet.Transports.UDP do
           socket: socket,
           family: family,
           sippet: name,
-          transport_name: transport_name
+          transport_name: transport_name,
+          dev: dev
         }
 
         {:noreply, state}
@@ -119,7 +129,7 @@ defmodule Sippet.Transports.UDP do
 
         Process.sleep(10_000)
 
-        {:noreply, nil, {:continue, {name, ip, port, family, transport_name}}}
+        {:noreply, nil, {:continue, {name, ip, port, family, transport_name, dev}}}
     end
   end
 
@@ -194,4 +204,7 @@ defmodule Sippet.Transports.UDP do
   defp stringify_hostport(host, port) do
     "#{host}:#{port}"
   end
+
+  defp bind_to_device_opts(nil), do: []
+  defp bind_to_device_opts(dev) when is_binary(dev), do: [{:bind_to_device, dev}]
 end
