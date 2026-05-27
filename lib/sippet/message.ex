@@ -1375,7 +1375,7 @@ defmodule Sippet.Message do
       if message.headers |> Map.has_key?(:content_length) do
         message
       else
-        len = if(message.body == nil, do: 0, else: String.length(message.body))
+        len = if(message.body == nil, do: 0, else: byte_size(message.body))
         %{message | headers: Map.put(message.headers, :content_length, len)}
       end
 
