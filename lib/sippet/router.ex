@@ -71,7 +71,40 @@ defmodule Sippet.Router do
             "#{inspect(reason)}"
           ]
         end)
+
+        # RFC 3261 §18.3: for malformed requests, SHOULD send 400 Bad Request.
+        # For responses, silently discard (already done by not acting).
+        maybe_send_400(sippet, raw, from, source_transport, reason)
     end
+  end
+
+  # RFC 3261 §18.3: If a malformed message is a request, the element SHOULD
+  # generate a 400 (Bad Request) response.  For responses, silently discard.
+  # We re-parse the raw bytes (headers only) to extract enough to build a
+  # response.  If even header parsing fails, there is nothing we can do.
+  defp maybe_send_400(sippet, raw, from, source_transport, reason) do
+    {_protocol, address, port} = from
+
+    with [header | _] <- String.split(raw, ~r{\r?\n\r?\n}, parts: 2),
+         {:ok, %Message{start_line: %RequestLine{}} = request} <- Message.parse(header) do
+      request = update_via(request, from)
+      host = ip_to_string(address)
+      reason_str = to_string(reason)
+
+      response =
+        request
+        |> Message.to_response(400)
+        |> Map.put(:body, reason_str)
+        |> Map.put(:target, {source_transport, host, port})
+        |> Message.put_header(:content_length, byte_size(reason_str))
+
+      send_transport_message(sippet, response, nil)
+    else
+      _ -> :ok
+    end
+  rescue
+    e ->
+      Logger.warning("failed to send 400 for malformed message: #{inspect(e)}")
   end
 
   defp parse_message(packet) do
@@ -480,6 +513,9 @@ defmodule Sippet.Router do
             "#{inspect(reason)}"
           ]
         end)
+
+        # RFC 3261 §18.3: for malformed requests, SHOULD send 400 Bad Request.
+        maybe_send_400(sippet, raw, from, source_transport, reason)
 
         {:error, reason}
     end
