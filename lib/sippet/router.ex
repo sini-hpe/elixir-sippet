@@ -46,7 +46,11 @@ defmodule Sippet.Router do
   defp handle_transport_message_legacy(sippet, raw, from, source_transport) do
     with {:ok, message} <- parse_message(raw),
          prepared_message <- update_via(message, from),
-         prepared_message <- %{prepared_message | source: source_transport},
+         prepared_message <- %{
+           prepared_message
+           | source: source_transport,
+             source_peer: source_peer(from)
+         },
          :ok <- Message.validate(prepared_message, from) do
       :telemetry.execute(@event_msg_received, %{byte_size: byte_size(raw)}, %{
         sippet: sippet,
@@ -116,6 +120,11 @@ defmodule Sippet.Router do
         parse_message(header, "")
     end
   end
+
+  # Extract the peer {ip, port} from the transport `from` tuple so responses
+  # can reuse the connection the request arrived on (RFC 3261 §18.2.2).
+  defp source_peer({_protocol, ip, port}), do: {ip, port}
+  defp source_peer(_), do: nil
 
   defp parse_message(header, body) do
     case Message.parse(header) do

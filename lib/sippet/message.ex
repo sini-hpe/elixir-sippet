@@ -20,7 +20,8 @@ defmodule Sippet.Message do
             headers: %{},
             body: nil,
             target: nil,
-            source: nil
+            source: nil,
+            source_peer: nil
 
   @type uri :: URI.t()
 
@@ -141,7 +142,9 @@ defmodule Sippet.Message do
                 protocol :: atom | binary,
                 host :: binary,
                 dport :: integer
-              }
+              },
+          source: atom | nil,
+          source_peer: {:inet.ip_address() | charlist() | binary(), :inet.port_number()} | nil
         }
 
   @type request :: %__MODULE__{
