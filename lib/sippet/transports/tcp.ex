@@ -19,11 +19,17 @@ defmodule Sippet.Transports.TCP do
     * `:max_connections` – maximum number of pooled connections (default 0 = unlimited)
     * `:keepalive_enabled` – whether to send CRLF keep-alive pings (default false)
     * `:keepalive_interval` – interval in ms between CRLF pings (default 30 000)
+    * `:dev` – bind the listening and outbound sockets to a network device
+      (SO_BINDTODEVICE); `nil` disables (default)
+    * `:security_protected` – require IPSec (ESP) protection via IP_XFRM_POLICY
+      on the listening and outbound sockets (default false)
+    * `:dscp` – DSCP value (0..63) written to the IP TOS byte (default nil)
   """
 
   use GenServer
 
   alias Sippet.Message
+  alias Sippet.Transports.SocketPolicy
   alias Sippet.Transports.TCP.Connection
 
   require Logger
@@ -50,7 +56,10 @@ defmodule Sippet.Transports.TCP do
             max_connections: @default_max_connections,
             conns_per_peer: @default_conns_per_peer,
             keepalive_enabled: false,
-            keepalive_interval: @default_keepalive_interval
+            keepalive_interval: @default_keepalive_interval,
+            dev: nil,
+            security_protected: false,
+            dscp: nil
 
   @doc """
   Starts the TCP transport.
@@ -112,6 +121,24 @@ defmodule Sippet.Transports.TCP do
     keepalive_enabled = Keyword.get(options, :keepalive_enabled, false)
     keepalive_interval = Keyword.get(options, :keepalive_interval, @default_keepalive_interval)
 
+    dev =
+      case Keyword.fetch(options, :dev) do
+        {:ok, d} when is_binary(d) and d != "" -> d
+        _ -> nil
+      end
+
+    security_protected =
+      case Keyword.fetch(options, :security_protected) do
+        {:ok, true} -> true
+        _ -> false
+      end
+
+    dscp =
+      case Keyword.fetch(options, :dscp) do
+        {:ok, v} when is_integer(v) and v >= 0 and v <= 63 -> v
+        _ -> nil
+      end
+
     ip =
       case resolve_name(address, family) do
         {:ok, ip} ->
@@ -129,7 +156,10 @@ defmodule Sippet.Transports.TCP do
       max_connections: max_connections,
       conns_per_peer: max(conns_per_peer, 1),
       keepalive_enabled: keepalive_enabled,
-      keepalive_interval: keepalive_interval
+      keepalive_interval: keepalive_interval,
+      dev: dev,
+      security_protected: security_protected,
+      dscp: dscp
     }
 
     GenServer.start_link(__MODULE__, {name, ip, port, family, transport_name, tcp_opts})
@@ -137,24 +167,33 @@ defmodule Sippet.Transports.TCP do
 
   @impl true
   def init({name, ip, port, family, transport_name, tcp_opts}) do
-    Sippet.register_transport(name, transport_name, :tcp, true)
-    {:ok, nil, {:continue, {name, ip, port, family, transport_name, tcp_opts}}}
-  end
-
-  @impl true
-  def handle_continue({name, ip, port, family, transport_name, tcp_opts}, nil) do
-    listen_opts = [
-      :binary,
-      {:active, false},
-      {:ip, ip},
-      family,
-      {:reuseaddr, true},
-      {:nodelay, true},
-      {:backlog, 128}
-    ]
+    # Bind the listening socket synchronously so that start_link only returns
+    # {:ok, pid} once the socket is actually bound and the acceptor is running.
+    # A bind failure (bad port, address in use, bad device) fails the start
+    # loudly via {:stop, reason} instead of silently retrying.
+    listen_opts =
+      [
+        :binary,
+        {:active, false},
+        {:ip, ip},
+        family,
+        {:reuseaddr, true},
+        {:nodelay, true},
+        {:backlog, 128}
+      ] ++
+        SocketPolicy.bind_to_device_opts(tcp_opts.dev) ++
+        SocketPolicy.dscp_opts(tcp_opts.dscp)
 
     case :gen_tcp.listen(port, listen_opts) do
       {:ok, listen_socket} ->
+        if tcp_opts.security_protected do
+          SocketPolicy.apply_xfrm_policy(listen_socket, family, :tcp)
+        end
+
+        # Register only after the socket is bound, so the router never routes
+        # to a transport whose socket is not ready.
+        Sippet.register_transport(name, transport_name, :tcp, true)
+
         Logger.debug(
           "#{inspect(self())} started transport " <>
             "#{stringify_ip(ip)}:#{port}/tcp (#{transport_name})"
@@ -171,7 +210,10 @@ defmodule Sippet.Transports.TCP do
           max_connections: tcp_opts.max_connections,
           conns_per_peer: Map.get(tcp_opts, :conns_per_peer, @default_conns_per_peer),
           keepalive_enabled: tcp_opts.keepalive_enabled,
-          keepalive_interval: tcp_opts.keepalive_interval
+          keepalive_interval: tcp_opts.keepalive_interval,
+          dev: tcp_opts.dev,
+          security_protected: tcp_opts.security_protected,
+          dscp: tcp_opts.dscp
         }
 
         # Start the acceptor loop in a linked process
@@ -180,16 +222,15 @@ defmodule Sippet.Transports.TCP do
         # Start periodic stale connection sweep
         schedule_sweep()
 
-        {:noreply, state}
+        {:ok, state}
 
       {:error, reason} ->
         Logger.error(
-          "#{inspect(self())} port #{port}/tcp " <>
-            "#{inspect(reason)}, retrying in 10s..."
+          "#{inspect(self())} failed to bind #{stringify_ip(ip)}:#{port}/tcp " <>
+            "(#{transport_name}): #{inspect(reason)}"
         )
 
-        Process.sleep(10_000)
-        {:noreply, nil, {:continue, {name, ip, port, family, transport_name, tcp_opts}}}
+        {:stop, {:listen_failed, reason}}
     end
   end
 
@@ -361,15 +402,22 @@ defmodule Sippet.Transports.TCP do
   end
 
   defp connect(state, ip, port) do
-    connect_opts = [
-      :binary,
-      {:active, false},
-      state.family,
-      {:nodelay, true}
-    ]
+    connect_opts =
+      [
+        :binary,
+        {:active, false},
+        state.family,
+        {:nodelay, true}
+      ] ++
+        SocketPolicy.bind_to_device_opts(state.dev) ++
+        SocketPolicy.dscp_opts(state.dscp)
 
     case :gen_tcp.connect(ip, port, connect_opts, state.connect_timeout) do
       {:ok, socket} ->
+        if state.security_protected do
+          SocketPolicy.apply_xfrm_policy(socket, state.family, :tcp)
+        end
+
         {:ok, conn_pid, new_state} = start_connection(state, socket, {ip, port}, :outbound)
         {:ok, conn_pid, new_state}
 
