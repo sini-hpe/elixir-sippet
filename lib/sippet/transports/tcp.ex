@@ -33,6 +33,7 @@ defmodule Sippet.Transports.TCP do
   @default_connect_timeout 5_000
   @default_max_connections 0
   @default_keepalive_interval 30_000
+  @default_conns_per_peer 1
   @sweep_interval 30_000
   @min_accept_backoff 100
   @max_accept_backoff 5_000
@@ -47,6 +48,7 @@ defmodule Sippet.Transports.TCP do
             message_timeout: @default_message_timeout,
             connect_timeout: @default_connect_timeout,
             max_connections: @default_max_connections,
+            conns_per_peer: @default_conns_per_peer,
             keepalive_enabled: false,
             keepalive_interval: @default_keepalive_interval
 
@@ -106,6 +108,7 @@ defmodule Sippet.Transports.TCP do
     message_timeout = Keyword.get(options, :message_timeout, @default_message_timeout)
     connect_timeout = Keyword.get(options, :connect_timeout, @default_connect_timeout)
     max_connections = Keyword.get(options, :max_connections, @default_max_connections)
+    conns_per_peer = Keyword.get(options, :conns_per_peer, @default_conns_per_peer)
     keepalive_enabled = Keyword.get(options, :keepalive_enabled, false)
     keepalive_interval = Keyword.get(options, :keepalive_interval, @default_keepalive_interval)
 
@@ -124,6 +127,7 @@ defmodule Sippet.Transports.TCP do
       message_timeout: message_timeout,
       connect_timeout: connect_timeout,
       max_connections: max_connections,
+      conns_per_peer: max(conns_per_peer, 1),
       keepalive_enabled: keepalive_enabled,
       keepalive_interval: keepalive_interval
     }
@@ -165,6 +169,7 @@ defmodule Sippet.Transports.TCP do
           message_timeout: tcp_opts.message_timeout,
           connect_timeout: tcp_opts.connect_timeout,
           max_connections: tcp_opts.max_connections,
+          conns_per_peer: Map.get(tcp_opts, :conns_per_peer, @default_conns_per_peer),
           keepalive_enabled: tcp_opts.keepalive_enabled,
           keepalive_interval: tcp_opts.keepalive_interval
         }
@@ -197,7 +202,7 @@ defmodule Sippet.Transports.TCP do
         if pool_full?(state) do
           Logger.warning(
             "[#{state.sippet}][#{transport_label(state)}] TCP max_connections reached " <>
-              "(#{map_size(state.connections)}), rejecting #{stringify_ip(peer_ip)}:#{peer_port}"
+              "(#{total_connections(state.connections)}), rejecting #{stringify_ip(peer_ip)}:#{peer_port}"
           )
 
           :gen_tcp.close(client_socket)
@@ -222,10 +227,11 @@ defmodule Sippet.Transports.TCP do
       {nil, _monitors} ->
         {:noreply, state}
 
-      {peer, monitors} ->
-        connections = Map.delete(state.connections, peer)
+      {{peer, pid}, monitors} ->
         emit_tcp_closed(state, "normal")
-        {:noreply, %{state | connections: connections, monitors: monitors}}
+
+        {:noreply,
+         %{state | connections: drop_conn(state.connections, peer, pid), monitors: monitors}}
     end
   end
 
@@ -245,46 +251,44 @@ defmodule Sippet.Transports.TCP do
   def handle_call(
         {:send_message, message, to_host, to_port, key},
         _from,
-        %{family: family, sippet: sippet} = state
+        state
       ) do
     Logger.debug([
       "[#{state.sippet}][#{transport_label(state)}] sending message to #{stringify_hostport(to_host, to_port)}/tcp",
       ", #{inspect(key)}"
     ])
 
-    with {:ok, to_ip} <- resolve_name(to_host, family),
-         {:ok, conn_pid, state} <- get_or_connect(state, to_ip, to_port),
-         iodata <- Message.to_iodata(message),
-         :ok <- Connection.send_message(conn_pid, iodata) do
-      {:reply, :ok, state}
-    else
-      {:error, reason} ->
-        Logger.warning("tcp transport error for #{to_host}:#{to_port}: #{inspect(reason)}")
-
-        if key != nil do
-          Sippet.Router.receive_transport_error(sippet, key, reason)
+    # RFC 3261 §18.2.2: for a response over a reliable transport, reuse the
+    # connection the originating request arrived on when it is still alive.
+    # Falls back to the Via-derived target below when no such connection exists.
+    case reuse_connection(state, message) do
+      {:ok, conn_pid} ->
+        case Connection.send_message(conn_pid, Message.to_iodata(message)) do
+          :ok -> {:reply, :ok, state}
+          {:error, _reason} -> send_to_target(state, message, to_host, to_port, key)
         end
 
-        {:reply, :ok, state}
+      :none ->
+        send_to_target(state, message, to_host, to_port, key)
     end
   end
 
   def handle_call(:connection_count, _from, state) do
-    {:reply, map_size(state.connections), state}
+    {:reply, total_connections(state.connections), state}
   end
 
   @impl true
   def terminate(reason, %{listen_socket: listen_socket, connections: connections})
       when listen_socket != nil do
     Logger.debug(
-      "stopping tcp transport, reason: #{inspect(reason)}, draining #{map_size(connections)} connections"
+      "stopping tcp transport, reason: #{inspect(reason)}, draining #{total_connections(connections)} connections"
     )
 
     # Close the listen socket first to stop accepting new connections
     :gen_tcp.close(listen_socket)
 
     # Stop all connection processes
-    for {_peer, pid} <- connections, Process.alive?(pid) do
+    for {_peer, pids} <- connections, pid <- pids, Process.alive?(pid) do
       GenServer.stop(pid, :normal, 5_000)
     end
   end
@@ -301,23 +305,58 @@ defmodule Sippet.Transports.TCP do
 
   # -- Connection management --
 
-  defp get_or_connect(%{connections: connections} = state, ip, port) do
-    case Map.get(connections, {ip, port}) do
-      nil ->
-        if pool_full?(state) do
-          {:error, :max_connections}
-        else
-          connect(state, ip, port)
+  # Resolve the Via-derived destination and send, opening a connection (or
+  # round-robining across the per-peer pool) as needed.
+  defp send_to_target(%{family: family, sippet: sippet} = state, message, to_host, to_port, key) do
+    with {:ok, to_ip} <- resolve_name(to_host, family),
+         {:ok, conn_pid, state} <- get_or_connect(state, to_ip, to_port),
+         :ok <- Connection.send_message(conn_pid, Message.to_iodata(message)) do
+      {:reply, :ok, state}
+    else
+      {:error, reason} ->
+        Logger.warning("tcp transport error for #{to_host}:#{to_port}: #{inspect(reason)}")
+
+        if key != nil do
+          Sippet.Router.receive_transport_error(sippet, key, reason)
         end
 
-      pid ->
-        if Process.alive?(pid) do
-          {:ok, pid, state}
-        else
-          # Stale entry – clean up and reconnect
-          connections = Map.delete(connections, {ip, port})
-          connect(%{state | connections: connections}, ip, port)
+        {:reply, :ok, state}
+    end
+  end
+
+  # RFC 3261 §18.2.2: a response over a reliable transport reuses the connection
+  # the originating request arrived on. `source_peer` is the request's peer
+  # {ip, port}; it is only set on responses (see the server transaction).
+  defp reuse_connection(state, message) do
+    with true <- Message.response?(message),
+         {ip, port} when not is_nil(ip) <- Map.get(message, :source_peer),
+         [pid | _] <-
+           state.connections |> Map.get({ip, port}, []) |> Enum.filter(&Process.alive?/1) do
+      {:ok, pid}
+    else
+      _ -> :none
+    end
+  end
+
+  defp get_or_connect(%{connections: connections} = state, ip, port) do
+    key = {ip, port}
+    live = connections |> Map.get(key, []) |> Enum.filter(&Process.alive?/1)
+    state = %{state | connections: put_conns(connections, key, live)}
+
+    cond do
+      length(live) >= state.conns_per_peer ->
+        # Pool for this peer is full – round-robin across existing connections.
+        [pid | rest] = live
+        {:ok, pid, %{state | connections: put_conns(state.connections, key, rest ++ [pid])}}
+
+      pool_full?(state) ->
+        case live do
+          [pid | _] -> {:ok, pid, state}
+          [] -> {:error, :max_connections}
         end
+
+      true ->
+        connect(state, ip, port)
     end
   end
 
@@ -357,8 +396,10 @@ defmodule Sippet.Transports.TCP do
     Connection.activate(pid, socket)
 
     ref = Process.monitor(pid)
-    connections = Map.put(state.connections, {ip, port}, pid)
-    monitors = Map.put(state.monitors, ref, {ip, port})
+    key = {ip, port}
+    pids = Map.get(state.connections, key, [])
+    connections = Map.put(state.connections, key, pids ++ [pid])
+    monitors = Map.put(state.monitors, ref, {key, pid})
     new_state = %{state | connections: connections, monitors: monitors}
 
     {ip_str, _} = peer
@@ -397,35 +438,42 @@ defmodule Sippet.Transports.TCP do
 
   # -- Pool helpers --
 
+  # Connections are stored as %{{ip, port} => [pid]} so a peer may hold a small
+  # pool of parallel connections (request fan-out) plus any inbound connections.
+  defp total_connections(connections) do
+    Enum.reduce(connections, 0, fn {_peer, pids}, acc -> acc + length(pids) end)
+  end
+
+  defp put_conns(connections, key, []), do: Map.delete(connections, key)
+  defp put_conns(connections, key, pids), do: Map.put(connections, key, pids)
+
+  defp drop_conn(connections, key, pid) do
+    pids = connections |> Map.get(key, []) |> List.delete(pid)
+    put_conns(connections, key, pids)
+  end
+
   defp pool_full?(%{max_connections: 0}), do: false
 
   defp pool_full?(%{max_connections: max, connections: connections}) do
-    map_size(connections) >= max
+    total_connections(connections) >= max
   end
 
   defp sweep_stale_connections(state) do
-    {stale_peers, stale_refs} =
-      Enum.reduce(state.connections, {[], []}, fn {peer, pid}, {peers, refs} ->
-        if Process.alive?(pid) do
-          {peers, refs}
-        else
-          ref =
-            Enum.find_value(state.monitors, fn
-              {r, ^peer} -> r
-              _ -> nil
-            end)
-
-          {[peer | peers], if(ref, do: [ref | refs], else: refs)}
-        end
+    {connections, stale_count} =
+      Enum.reduce(state.connections, {%{}, 0}, fn {peer, pids}, {acc, count} ->
+        live = Enum.filter(pids, &Process.alive?/1)
+        {put_conns(acc, peer, live), count + (length(pids) - length(live))}
       end)
 
-    if stale_peers != [] do
+    stale_refs =
+      for {ref, {_key, pid}} <- state.monitors, not Process.alive?(pid), do: ref
+
+    if stale_count > 0 do
       Logger.debug(
-        "[#{state.sippet}][#{transport_label(state)}] sweeping #{length(stale_peers)} stale TCP connections"
+        "[#{state.sippet}][#{transport_label(state)}] sweeping #{stale_count} stale TCP connections"
       )
     end
 
-    connections = Map.drop(state.connections, stale_peers)
     monitors = Map.drop(state.monitors, stale_refs)
     %{state | connections: connections, monitors: monitors}
   end

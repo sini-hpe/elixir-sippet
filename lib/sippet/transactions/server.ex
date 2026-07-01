@@ -42,9 +42,13 @@ defmodule Sippet.Transactions.Server do
 
       # When the response has no explicit target but the originating request
       # carries a source transport, derive the response target from the Via
-      # header and route it back through the same transport.
-      defp ensure_response_target(%{target: nil} = response, %{source: source})
+      # header and route it back through the same transport.  The originating
+      # request's `source_peer` (the connection it arrived on) is propagated so
+      # a reliable transport can reuse that exact connection (RFC 3261 §18.2.2).
+      defp ensure_response_target(%{target: nil} = response, %{source: source} = request)
            when source != nil do
+        response = %{response | source_peer: Map.get(request, :source_peer)}
+
         case response.headers do
           %{via: [{_version, _protocol, {host, port}, params} | _]} ->
             host =
