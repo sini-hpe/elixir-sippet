@@ -183,18 +183,26 @@ defmodule Sippet.Transports.UDP do
         {:send_message, message, to_host, to_port, key},
         %{socket: socket, family: family, sippet: sippet} = state
       ) do
-    Logger.debug([
-      "[#{state.sippet}][#{transport_label(state)}] sending message to #{stringify_hostport(to_host, to_port)}/udp",
-      ", #{inspect(key)}"
-    ])
+    result =
+      with {:ok, to_ip} <- resolve_name(to_host, family),
+           iodata <- Message.to_iodata(message),
+           :ok <- :gen_udp.send(socket, {to_ip, to_port}, iodata) do
+        :ok
+      end
 
-    with {:ok, to_ip} <- resolve_name(to_host, family),
-         iodata <- Message.to_iodata(message),
-         :ok <- :gen_udp.send(socket, {to_ip, to_port}, iodata) do
-      :ok
-    else
+    # Log the actual outcome so a logged send always reflects a real result.
+    case result do
+      :ok ->
+        Logger.debug([
+          "[#{state.sippet}][#{transport_label(state)}] sent message to #{stringify_hostport(to_host, to_port)}/udp",
+          ", #{inspect(key)}"
+        ])
+
       {:error, reason} ->
-        Logger.warning("udp transport error for #{to_host}:#{to_port}: #{inspect(reason)}")
+        Logger.warning([
+          "[#{state.sippet}][#{transport_label(state)}] failed to send message to #{stringify_hostport(to_host, to_port)}/udp",
+          ", #{inspect(key)}: #{inspect(reason)}"
+        ])
 
         if key != nil do
           Sippet.Router.receive_transport_error(sippet, key, reason)
