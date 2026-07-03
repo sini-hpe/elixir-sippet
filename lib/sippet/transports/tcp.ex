@@ -294,24 +294,43 @@ defmodule Sippet.Transports.TCP do
         _from,
         state
       ) do
-    Logger.debug([
-      "[#{state.sippet}][#{transport_label(state)}] sending message to #{stringify_hostport(to_host, to_port)}/tcp",
-      ", #{inspect(key)}"
-    ])
-
     # RFC 3261 §18.2.2: for a response over a reliable transport, reuse the
     # connection the originating request arrived on when it is still alive.
     # Falls back to the Via-derived target below when no such connection exists.
-    case reuse_connection(state, message) do
-      {:ok, conn_pid} ->
-        case Connection.send_message(conn_pid, Message.to_iodata(message)) do
-          :ok -> {:reply, :ok, state}
-          {:error, _reason} -> send_to_target(state, message, to_host, to_port, key)
-        end
+    {result, state} =
+      case reuse_connection(state, message) do
+        {:ok, conn_pid} ->
+          case Connection.send_message(conn_pid, Message.to_iodata(message)) do
+            :ok -> {:ok, state}
+            {:error, _reason} -> send_to_target(state, message, to_host, to_port)
+          end
 
-      :none ->
-        send_to_target(state, message, to_host, to_port, key)
+        :none ->
+          send_to_target(state, message, to_host, to_port)
+      end
+
+    # Log the actual outcome so a logged send always reflects a real result.
+    case result do
+      :ok ->
+        Logger.debug([
+          "[#{state.sippet}][#{transport_label(state)}] sent message to #{stringify_hostport(to_host, to_port)}/tcp",
+          ", #{inspect(key)}"
+        ])
+
+      {:error, reason} ->
+        Logger.warning([
+          "[#{state.sippet}][#{transport_label(state)}] failed to send message to #{stringify_hostport(to_host, to_port)}/tcp",
+          ", #{inspect(key)}: #{inspect(reason)}"
+        ])
+
+        # Notify the owning transaction so it can fail fast instead of waiting
+        # for Timer B/F. Requires a non-nil transaction key from the caller.
+        if key != nil do
+          Sippet.Router.receive_transport_error(state.sippet, key, reason)
+        end
     end
+
+    {:reply, :ok, state}
   end
 
   def handle_call(:connection_count, _from, state) do
@@ -347,21 +366,17 @@ defmodule Sippet.Transports.TCP do
   # -- Connection management --
 
   # Resolve the Via-derived destination and send, opening a connection (or
-  # round-robining across the per-peer pool) as needed.
-  defp send_to_target(%{family: family, sippet: sippet} = state, message, to_host, to_port, key) do
+  # round-robining across the per-peer pool) as needed. Returns
+  # `{:ok, state}` or `{{:error, reason}, state}`; logging and transaction
+  # error notification are handled by the caller.
+  defp send_to_target(%{family: family} = state, message, to_host, to_port) do
     with {:ok, to_ip} <- resolve_name(to_host, family),
          {:ok, conn_pid, state} <- get_or_connect(state, to_ip, to_port),
          :ok <- Connection.send_message(conn_pid, Message.to_iodata(message)) do
-      {:reply, :ok, state}
+      {:ok, state}
     else
       {:error, reason} ->
-        Logger.warning("tcp transport error for #{to_host}:#{to_port}: #{inspect(reason)}")
-
-        if key != nil do
-          Sippet.Router.receive_transport_error(sippet, key, reason)
-        end
-
-        {:reply, :ok, state}
+        {{:error, reason}, state}
     end
   end
 
