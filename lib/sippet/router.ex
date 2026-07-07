@@ -168,6 +168,34 @@ defmodule Sippet.Router do
 
   defp update_via(%Message{start_line: %StatusLine{}} = response, _from), do: response
 
+  # Transient/operational send failures (remote unreachable, congestion, peer
+  # reset). These are environmental and expected in the field, so they are
+  # logged at :warning. Every other reason — including wrong parameters
+  # (:einval, :badarg), a dead/closed local socket (:closed, :enotconn, :ebadf,
+  # :epipe), an oversized datagram (:emsgsize) and unresolved names (:nxdomain)
+  # — points at a bug or misconfiguration and is logged at :error.
+  @transient_send_errors [
+    :ehostunreach,
+    :enetunreach,
+    :eagain,
+    :etimedout,
+    :econnrefused,
+    :econnreset,
+    :enobufs,
+    :timeout
+  ]
+
+  @doc """
+  Classifies a socket send-failure reason into a `Logger` level.
+
+  Returns `:warning` for known transient/operational errors and `:error` for
+  everything else (buggy situations: wrong parameters, closed/wrong socket,
+  oversized datagram, name resolution failure, or any unrecognised reason).
+  """
+  @spec send_error_level(term()) :: :warning | :error
+  def send_error_level(reason) when reason in @transient_send_errors, do: :warning
+  def send_error_level(_reason), do: :error
+
   @doc false
   def receive_transport_error(sippet, transaction_key, reason) do
     if sharded_transactions?() do
@@ -238,7 +266,10 @@ defmodule Sippet.Router do
       :ok
     else
       {:error, reason} ->
-        Logger.error("udp direct send error for #{host}:#{port}: #{inspect(reason)}")
+        Logger.log(
+          send_error_level(reason),
+          "[#{sippet}] udp direct send failed to #{host}:#{port}/udp, #{inspect(key)}: #{inspect(reason)}"
+        )
 
         if key != nil do
           receive_transport_error(sippet, key, reason)

@@ -199,7 +199,7 @@ defmodule Sippet.Transports.UDP do
         ])
 
       {:error, reason} ->
-        Logger.error([
+        Logger.log(Sippet.Router.send_error_level(reason), [
           "[#{state.sippet}][#{transport_label(state)}] failed to send message to #{stringify_hostport(to_host, to_port)}/udp",
           ", #{inspect(key)}: #{inspect(reason)}"
         ])
