@@ -238,7 +238,7 @@ defmodule Sippet.Router do
       :ok
     else
       {:error, reason} ->
-        Logger.warning("udp direct send error for #{host}:#{port}: #{inspect(reason)}")
+        Logger.error("udp direct send error for #{host}:#{port}: #{inspect(reason)}")
 
         if key != nil do
           receive_transport_error(sippet, key, reason)

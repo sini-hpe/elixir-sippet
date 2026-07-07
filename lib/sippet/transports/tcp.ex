@@ -318,7 +318,7 @@ defmodule Sippet.Transports.TCP do
         ])
 
       {:error, reason} ->
-        Logger.warning([
+        Logger.error([
           "[#{state.sippet}][#{transport_label(state)}] failed to send message to #{stringify_hostport(to_host, to_port)}/tcp",
           ", #{inspect(key)}: #{inspect(reason)}"
         ])
