@@ -1539,10 +1539,22 @@ defmodule Sippet.Message do
       "/",
       upcase_atom_or_string(protocol),
       " ",
-      host,
+      format_sent_by_host(host),
       if(port > 0, do: [":", Integer.to_string(port)], else: ""),
       do_parameters(parameters)
     ]
+  end
+
+  # An IPv6 literal in a Via sent-by must be enclosed in square brackets
+  # (RFC 3261 §25.1 / RFC 5118), otherwise the trailing ":port" is ambiguous
+  # and fuses into the address. Hostnames and IPv4 literals are left as-is.
+  # The parser strips brackets from the host, so we re-add them here.
+  defp format_sent_by_host(host) do
+    if String.contains?(host, ":") and not String.starts_with?(host, "[") do
+      ["[", host, "]"]
+    else
+      host
+    end
   end
 
   defp do_header_value({code, agent, text})
