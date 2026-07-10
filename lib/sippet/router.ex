@@ -136,6 +136,17 @@ defmodule Sippet.Router do
   defp ip_to_string(ip) when is_binary(ip), do: ip
   defp ip_to_string(ip) when is_tuple(ip), do: :inet.ntoa(ip) |> to_string()
 
+  # Format a host/port pair for logging, bracketing IPv6 literals.
+  defp stringify_hostport(host, port) do
+    host = to_string(host)
+
+    if String.contains?(host, ":") do
+      "[#{host}]:#{port}"
+    else
+      "#{host}:#{port}"
+    end
+  end
+
   defp update_via(%Message{start_line: %RequestLine{}} = request, {:wss, _ip, _from_port}),
     do: request
 
@@ -167,6 +178,34 @@ defmodule Sippet.Router do
   end
 
   defp update_via(%Message{start_line: %StatusLine{}} = response, _from), do: response
+
+  # Transient/operational send failures (remote unreachable, congestion, peer
+  # reset). These are environmental and expected in the field, so they are
+  # logged at :warning. Every other reason — including wrong parameters
+  # (:einval, :badarg), a dead/closed local socket (:closed, :enotconn, :ebadf,
+  # :epipe), an oversized datagram (:emsgsize) and unresolved names (:nxdomain)
+  # — points at a bug or misconfiguration and is logged at :error.
+  @transient_send_errors [
+    :ehostunreach,
+    :enetunreach,
+    :eagain,
+    :etimedout,
+    :econnrefused,
+    :econnreset,
+    :enobufs,
+    :timeout
+  ]
+
+  @doc """
+  Classifies a socket send-failure reason into a `Logger` level.
+
+  Returns `:warning` for known transient/operational errors and `:error` for
+  everything else (buggy situations: wrong parameters, closed/wrong socket,
+  oversized datagram, name resolution failure, or any unrecognised reason).
+  """
+  @spec send_error_level(term()) :: :warning | :error
+  def send_error_level(reason) when reason in @transient_send_errors, do: :warning
+  def send_error_level(_reason), do: :error
 
   @doc false
   def receive_transport_error(sippet, transaction_key, reason) do
@@ -212,10 +251,15 @@ defmodule Sippet.Router do
       case Registry.meta(sippet, {:udp_socket, protocol}) do
         {:ok, {socket, family}} ->
           # Direct UDP send — bypass GenServer to avoid single-process bottleneck
-          send_udp_direct(socket, family, sippet, message, host, port, key)
+          send_udp_direct(socket, family, sippet, message, host, port, key, protocol)
 
         :error ->
           # TCP or other transport — route through GenServer
+          Logger.debug(fn ->
+            "[#{sippet}] send #{message_kind(message)} src=? => dst=#{stringify_hostport(host, port)} " <>
+              "transport=#{protocol}/tcp #{inspect(key)}"
+          end)
+
           GenServer.call(
             {:via, Registry, {sippet, {:transport, protocol}}},
             {:send_message, message, host, port, key}
@@ -231,14 +275,28 @@ defmodule Sippet.Router do
     result
   end
 
-  defp send_udp_direct(socket, family, sippet, message, host, port, key) do
+  defp send_udp_direct(socket, family, sippet, message, host, port, key, protocol \\ :udp) do
     with {:ok, to_ip} <- host |> String.to_charlist() |> :inet.getaddr(family),
          iodata <- Message.to_iodata(message),
          :ok <- :gen_udp.send(socket, {to_ip, port}, iodata) do
+      Logger.debug(fn ->
+        src =
+          case :inet.sockname(socket) do
+            {:ok, {sip, sport}} -> stringify_hostport(ip_to_string(sip), sport)
+            _ -> "?"
+          end
+
+        "[#{sippet}] send #{message_kind(message)} src=#{src} => " <>
+          "dst=#{stringify_hostport(host, port)} transport=#{protocol}/udp #{inspect(key)}"
+      end)
+
       :ok
     else
       {:error, reason} ->
-        Logger.warning("udp direct send error for #{host}:#{port}: #{inspect(reason)}")
+        Logger.log(
+          send_error_level(reason),
+          "[#{sippet}] udp direct send failed to #{host}:#{port}/udp, #{inspect(key)}: #{inspect(reason)}"
+        )
 
         if key != nil do
           receive_transport_error(sippet, key, reason)

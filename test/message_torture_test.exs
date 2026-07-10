@@ -36,26 +36,32 @@ defmodule Sippet.Message.TortureTest do
       secondparam ; q = 0.33
 
     """
+
     request = Message.parse!(message)
 
     assert Message.request?(request)
 
     assert request.start_line.method == :invite
+
     assert request.start_line.request_uri ==
-      URI.parse!("sip:vivekg@chair-dnrc.example.com;unknownparam")
+             URI.parse!("sip:vivekg@chair-dnrc.example.com;unknownparam")
+
     assert request.start_line.version == {2, 0}
 
     assert elem(request.headers.to, 0) == ""
     assert elem(request.headers.to, 1)
-      URI.parse!("sip:vivekg@chair-dnrc.example.com")
+    URI.parse!("sip:vivekg@chair-dnrc.example.com")
+
     assert elem(request.headers.to, 2) ==
-      %{"tag" => "1918181833n"}
+             %{"tag" => "1918181833n"}
 
     assert elem(request.headers.from, 0) == "J Rosenberg \\\""
+
     assert elem(request.headers.from, 1) ==
-      URI.parse!("sip:jdrosen@example.com")
+             URI.parse!("sip:jdrosen@example.com")
+
     assert elem(request.headers.from, 2) ==
-      %{"tag" => "98asjd8"}
+             %{"tag" => "98asjd8"}
 
     assert request.headers.max_forwards == 68
 
@@ -65,34 +71,64 @@ defmodule Sippet.Message.TortureTest do
 
     assert request.headers.cseq == {9, :invite}
 
-    [first_via|rest] = request.headers.via
-    assert first_via ==
-      {{2, 0}, :udp, {"192.0.2.2", 5060}, %{"branch" => "390skdjuw"}}
+    [first_via | rest] = request.headers.via
 
-    [second_via|rest] = rest
+    assert first_via ==
+             {{2, 0}, :udp, {"192.0.2.2", 5060}, %{"branch" => "390skdjuw"}}
+
+    [second_via | rest] = rest
+
     assert second_via ==
-      {{2, 0}, :tcp, {"spindle.example.com", 5060}, %{"branch" => "z9hG4bK9ikj8"}}
+             {{2, 0}, :tcp, {"spindle.example.com", 5060}, %{"branch" => "z9hG4bK9ikj8"}}
 
     [third_via] = rest
+
     assert third_via ==
-      {{2, 0}, :udp, {"192.168.255.111", 5060}, %{"branch" => "z9hG4bK30239"}}
+             {{2, 0}, :udp, {"192.168.255.111", 5060}, %{"branch" => "z9hG4bK30239"}}
 
     assert request.headers.subject == ""
 
     assert request.headers["NewFangledHeader"] ==
-      ["newfangled value continued newfangled value"]
+             ["newfangled value continued newfangled value"]
 
     assert request.headers["UnknownHeaderWithUnusualValue"] ==
-      [";;,,;;,;"]
+             [";;,,;;,;"]
 
     assert request.headers.content_type == {{"application", "sdp"}, %{}}
 
     assert List.first(request.headers.route) ==
-      {"", URI.parse!("sip:services.example.com;lr;unknownwith=value;unknown-no-value"), %{}}
+             {"", URI.parse!("sip:services.example.com;lr;unknownwith=value;unknown-no-value"),
+              %{}}
 
     assert List.first(request.headers.contact) ==
-      {"Quoted string \"\"", URI.parse!("sip:jdrosen@example.com"),
-          %{"newparam" => "newvalue", "secondparam" => "", "q" => "0.33"}}
+             {"Quoted string \"\"", URI.parse!("sip:jdrosen@example.com"),
+              %{"newparam" => "newvalue", "secondparam" => "", "q" => "0.33"}}
+  end
+
+  test "IPv6 Via sent-by is bracketed on encode (RFC 5118)" do
+    message = """
+    REGISTER sip:[2001:db8::10] SIP/2.0
+    Via: SIP/2.0/UDP [2001:db8::9:255]:5060;branch=z9hG4bKas3
+    Max-Forwards: 70
+    To: <sip:user@example.com>
+    From: <sip:user@example.com>;tag=1
+    Call-ID: abc@host
+    CSeq: 1 REGISTER
+    Content-Length: 0
+
+    """
+
+    request = Message.parse!(message)
+
+    # The parser strips the brackets from the host.
+    [{_ver, :udp, {host, 5060}, _params} | _] = request.headers.via
+    assert host == "2001:db8::9:255"
+
+    # On encode the IPv6 literal must be re-bracketed so the ":port" is not
+    # fused into the address.
+    encoded = to_string(request)
+    assert encoded =~ "Via: SIP/2.0/UDP [2001:db8::9:255]:5060"
+    refute encoded =~ "UDP 2001:db8::9:255:5060"
   end
 
   test "wide range of characters" do
@@ -108,39 +144,45 @@ defmodule Sippet.Message.TortureTest do
     Content-Length: 0
 
     """
+
     request = Message.parse!(message)
 
     assert Message.request?(request)
 
     assert request.start_line.method ==
-      "!interesting-Method0123456789_*+`.%indeed'~"
+             "!interesting-Method0123456789_*+`.%indeed'~"
+
     assert request.start_line.request_uri ==
-      URI.parse!("sip:1_unusual.URI~(to-be!sure)&isn't+it$/crazy?,/;;*:&it+has=1,weird!*pas$wo~d_too.(doesn't-it)@example.com")
+             URI.parse!(
+               "sip:1_unusual.URI~(to-be!sure)&isn't+it$/crazy?,/;;*:&it+has=1,weird!*pas$wo~d_too.(doesn't-it)@example.com"
+             )
+
     assert request.start_line.version == {2, 0}
 
     assert List.first(request.headers.via) ==
-      {{2, 0}, :tcp, {"host1.example.com", 5060}, %{"branch" => "z9hG4bK-.!%66*_+`'~"}}
+             {{2, 0}, :tcp, {"host1.example.com", 5060}, %{"branch" => "z9hG4bK-.!%66*_+`'~"}}
 
     assert request.headers.to ==
-      {"BEL: NUL:\u{0000} DEL:",
-          URI.parse!("sip:1_unusual.URI~(to-be!sure)&isn't+it$/crazy?,/;;*@example.com"),
-          %{}}
+             {"BEL: NUL:\u{0000} DEL:",
+              URI.parse!("sip:1_unusual.URI~(to-be!sure)&isn't+it$/crazy?,/;;*@example.com"), %{}}
 
     # Note that the parser will transform parameters into lowercase strings
     assert request.headers.from ==
-      {"token1~` token2'+_ token3*%!.-", URI.parse!("sip:mundane@example.com"),
-          %{"fromparam''~+*_!.-%" => "Ñ\u{20AC}Ð°Ð±Ð¾Ñ\u{2012}Ð°Ñ×ÑÐ¸Ð¹",
-            "tag" => "_token~1'+`*%!-."}}
+             {"token1~` token2'+_ token3*%!.-", URI.parse!("sip:mundane@example.com"),
+              %{
+                "fromparam''~+*_!.-%" => "Ñ\u{20AC}Ð°Ð±Ð¾Ñ\u{2012}Ð°Ñ×ÑÐ¸Ð¹",
+                "tag" => "_token~1'+`*%!-."
+              }}
 
     assert request.headers.call_id == "intmeth.word%ZK-!.*_+'@word`~)(><:\/\"][?}{"
 
     assert request.headers.cseq ==
-      {139122385, "!interesting-Method0123456789_*+`.%indeed'~"}
+             {139_122_385, "!interesting-Method0123456789_*+`.%indeed'~"}
 
     assert request.headers.max_forwards == 255
 
     assert request.headers["extensionHeader-!.%*+_`'~"] ==
-      ["ï»¿å¤§åé»"]
+             ["ï»¿å¤§åé»"]
 
     assert request.headers.content_length == 0
   end
@@ -160,6 +202,7 @@ defmodule Sippet.Message.TortureTest do
     l: 0
 
     """
+
     request = Message.parse!(message)
 
     assert Message.request?(request)
@@ -169,7 +212,7 @@ defmodule Sippet.Message.TortureTest do
     assert elem(request.headers.to, 0) == "%Z%45"
 
     assert elem(List.first(request.headers.via), 3)["branch"] ==
-      "z9hG4bK209%fzsnel234"
+             "z9hG4bK209%fzsnel234"
 
     assert elem(request.headers.cseq, 1) == "RE%47IST%45R"
 
@@ -190,6 +233,7 @@ defmodule Sippet.Message.TortureTest do
     l: 0
 
     """
+
     request = Message.parse!(message)
 
     assert elem(request.headers.from, 0) == "caller"
@@ -243,12 +287,13 @@ defmodule Sippet.Message.TortureTest do
     l: 150
 
     """
+
     request = Message.parse!(message)
 
     assert length(request.headers.via) == 34
 
     assert request.headers.call_id ==
-      "longreq.onereallyreallyreallyreallyreallyreallyreallyreallyreallyreallyreallyreallyreallyreallyreallyreallyreallyreallyreallyreallylongcallid"
+             "longreq.onereallyreallyreallyreallyreallyreallyreallyreallyreallyreallyreallyreallyreallyreallyreallyreallyreallyreallyreallyreallylongcallid"
   end
 
   test "from with addr-spec like format" do
@@ -259,13 +304,13 @@ defmodule Sippet.Message.TortureTest do
 
       """
 
-    request = options |> Message.parse!
+    request = options |> Message.parse!()
 
     assert elem(request.headers.from, 2) ==
-      %{"tag" => "98asjd8"}
+             %{"tag" => "98asjd8"}
   end
 
-    test "P-Asserted-Identity with addr-spec like format" do
+  test "P-Asserted-Identity with addr-spec like format" do
     options = """
     OPTIONS sip:john.doe@example.com SIP/2.0
     P-Asserted-Identity   : sip:jdrosen@example.com
@@ -274,7 +319,7 @@ defmodule Sippet.Message.TortureTest do
 
     request = options |> Message.parse!()
 
-      assert elem(request.headers.p_asserted_identity |> hd, 1).authority == "jdrosen@example.com"
+    assert elem(request.headers.p_asserted_identity |> hd, 1).authority == "jdrosen@example.com"
   end
 
   test "P-Asserted-Identity with name-addr like format" do

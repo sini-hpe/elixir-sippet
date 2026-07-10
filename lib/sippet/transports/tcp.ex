@@ -45,6 +45,8 @@ defmodule Sippet.Transports.TCP do
   @max_accept_backoff 5_000
 
   defstruct listen_socket: nil,
+            local_ip: nil,
+            local_port: nil,
             family: :inet,
             sippet: nil,
             transport_name: nil,
@@ -181,6 +183,7 @@ defmodule Sippet.Transports.TCP do
         {:nodelay, true},
         {:backlog, 128}
       ] ++
+        listen_reuseport_opts(tcp_opts.security_protected) ++
         SocketPolicy.bind_to_device_opts(tcp_opts.dev) ++
         SocketPolicy.dscp_opts(tcp_opts.dscp)
 
@@ -201,6 +204,8 @@ defmodule Sippet.Transports.TCP do
 
         state = %__MODULE__{
           listen_socket: listen_socket,
+          local_ip: ip,
+          local_port: port,
           family: family,
           sippet: name,
           transport_name: transport_name,
@@ -318,7 +323,7 @@ defmodule Sippet.Transports.TCP do
         ])
 
       {:error, reason} ->
-        Logger.warning([
+        Logger.log(Sippet.Router.send_error_level(reason), [
           "[#{state.sippet}][#{transport_label(state)}] failed to send message to #{stringify_hostport(to_host, to_port)}/tcp",
           ", #{inspect(key)}: #{inspect(reason)}"
         ])
@@ -424,6 +429,7 @@ defmodule Sippet.Transports.TCP do
         state.family,
         {:nodelay, true}
       ] ++
+        local_bind_opts(state) ++
         SocketPolicy.bind_to_device_opts(state.dev) ++
         SocketPolicy.dscp_opts(state.dscp)
 
@@ -440,6 +446,28 @@ defmodule Sippet.Transports.TCP do
         {:error, reason}
     end
   end
+
+  # For IPsec-protected (3GPP Gm) transports the outbound connection MUST
+  # originate from the transport's own protected address and port (port_pc).
+  # Otherwise the kernel picks a source address/ephemeral port that does not
+  # match the XFRM OUT policy, so the packet egresses unprotected (in the
+  # capture it went out from a link-local address in cleartext) and the UE
+  # drops it. Binding the local end fixes this. Because the same address:port
+  # is also held by this transport's listening socket, SO_REUSEPORT must be set
+  # on BOTH sockets (SO_REUSEADDR alone yields :eaddrinuse against a socket in
+  # LISTEN state); see listen_reuseport_opts/1.
+  defp local_bind_opts(%{security_protected: true, local_ip: ip, local_port: port})
+       when not is_nil(ip) and is_integer(port) do
+    [{:ip, ip}, {:port, port}, {:reuseaddr, true}, {:reuseport, true}]
+  end
+
+  defp local_bind_opts(_state), do: []
+
+  # SO_REUSEPORT on the listening socket so the outbound connect (above) may
+  # share port_pc. Only enabled for IPsec-protected transports to avoid
+  # changing bind semantics for ordinary listeners.
+  defp listen_reuseport_opts(true), do: [{:reuseport, true}]
+  defp listen_reuseport_opts(_), do: []
 
   defp start_connection(state, socket, {ip, port} = peer, direction) do
     keepalive_interval =

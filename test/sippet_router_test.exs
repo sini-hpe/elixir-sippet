@@ -149,4 +149,32 @@ defmodule Sippet.Router.Test do
       assert not called(Registry.lookup(:_, :_))
     end
   end
+
+  describe "send_error_level/1" do
+    test "transient/operational reasons are :warning" do
+      for reason <- [
+            :ehostunreach,
+            :enetunreach,
+            :eagain,
+            :etimedout,
+            :econnrefused,
+            :econnreset,
+            :enobufs,
+            :timeout
+          ] do
+        assert Sippet.Router.send_error_level(reason) == :warning
+      end
+    end
+
+    test "buggy/closed-socket/wrong-parameter reasons are :error" do
+      for reason <- [:einval, :badarg, :closed, :enotconn, :ebadf, :epipe, :emsgsize, :nxdomain] do
+        assert Sippet.Router.send_error_level(reason) == :error
+      end
+    end
+
+    test "unrecognised reasons default to :error" do
+      assert Sippet.Router.send_error_level(:some_unknown_reason) == :error
+      assert Sippet.Router.send_error_level({:shutdown, :whatever}) == :error
+    end
+  end
 end
