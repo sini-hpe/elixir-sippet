@@ -461,7 +461,23 @@ defmodule Sippet.Transports.TCP do
     [{:ip, ip}, {:port, port}, {:reuseaddr, true}, {:reuseport, true}]
   end
 
+  # For ordinary (non-IPsec) transports the outbound connection must still
+  # originate from this transport's own configured local address. Otherwise the
+  # kernel selects a source address that may not belong to this node's transport
+  # set: e.g. when several 5G NFs share a subnet on the same host, an SCSCF
+  # (192.168.60.33) NOTIFY to the PCSCF egressed with the PCSCF's own source IP
+  # (192.168.60.31). Bind only the local IP and let the kernel pick an ephemeral
+  # source port. Skip when the transport listens on a wildcard address, since
+  # there is no single address to pin the outbound socket to.
+  defp local_bind_opts(%{local_ip: ip}) when not is_nil(ip) do
+    if wildcard_address?(ip), do: [], else: [{:ip, ip}]
+  end
+
   defp local_bind_opts(_state), do: []
+
+  defp wildcard_address?({0, 0, 0, 0}), do: true
+  defp wildcard_address?({0, 0, 0, 0, 0, 0, 0, 0}), do: true
+  defp wildcard_address?(_), do: false
 
   # SO_REUSEPORT on the listening socket so the outbound connect (above) may
   # share port_pc. Only enabled for IPsec-protected transports to avoid
