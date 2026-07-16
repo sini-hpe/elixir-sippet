@@ -1836,14 +1836,19 @@ defmodule Sippet.Message do
     end
   end
 
-  defp has_valid_via(message, {protocol1, _ip, _port}) do
-    {_version, protocol2, _sent_by, _params} = hd(message.headers.via)
-
-    if protocol1 != protocol2 do
-      {:error, "Via protocol doesn't match transport protocol"}
-    else
-      has_valid_via(message, message.headers.via)
-    end
+  defp has_valid_via(message, {_protocol, _ip, _port}) do
+    # NOTE: We intentionally do NOT reject a message when the transport it
+    # arrived on differs from the transport declared in its top Via header.
+    #
+    # RFC 3261 §18.1.1 requires a UAC to switch to a connection-oriented
+    # transport (e.g. TCP) when a request exceeds the path MTU, while
+    # RFC 3261 §17.1.1.3 requires the ACK for a non-2xx response to carry a
+    # Via equal to the original request's Via. As a result an IMS UE may send
+    # a large INVITE over TCP (Via=TCP) and its small ACK over UDP while still
+    # advertising Via=TCP. Discarding such messages breaks call flows, so we
+    # accept the transport mismatch and rely on the Via transport for
+    # response routing.
+    has_valid_via(message, message.headers.via)
   end
 
   defp has_valid_via(_, []), do: :ok
