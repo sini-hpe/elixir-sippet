@@ -167,6 +167,28 @@ defmodule Sippet.Transports.TCP do
     GenServer.start_link(__MODULE__, {name, ip, port, family, transport_name, tcp_opts})
   end
 
+  @doc """
+  Force-closes pooled connections matching `matcher`, using an abortive
+  (RST) close so the local sockets are freed immediately (no `FIN_WAIT`).
+
+  `matcher` is one of:
+
+    * `{:peers, [{ip, port}, ...]}` — close connections whose peer is exactly
+      one of the given `{ip, port}` tuples (`ip` an `:inet.ip_address`).
+    * `{:peer_ip, ip}` — close every connection whose peer IP is `ip`.
+
+  Intended for tearing down connections whose underlying path is going away
+  (e.g. an IPSec SA being deleted), where a clean FIN would never be
+  acknowledged by an unreachable peer.
+  """
+  @spec close_peers(
+          GenServer.server(),
+          {:peers, [{:inet.ip_address(), :inet.port_number()}]} | {:peer_ip, :inet.ip_address()}
+        ) :: :ok
+  def close_peers(server, matcher) do
+    GenServer.cast(server, {:close_peers, matcher})
+  end
+
   @impl true
   def init({name, ip, port, family, transport_name, tcp_opts}) do
     # Bind the listening socket synchronously so that start_link only returns
@@ -290,6 +312,32 @@ defmodule Sippet.Transports.TCP do
   def handle_info(_msg, state) do
     {:noreply, state}
   end
+
+  @impl true
+  def handle_cast({:close_peers, matcher}, state) do
+    closed =
+      for {peer, pids} <- state.connections, peer_matches?(peer, matcher), pid <- pids do
+        Connection.force_close(pid)
+        1
+      end
+
+    n = length(closed)
+
+    if n > 0 do
+      Logger.debug(
+        "[#{state.sippet}][#{transport_label(state)}] force-closing #{n} connection(s) " <>
+          "matching #{inspect(matcher)}"
+      )
+    end
+
+    {:noreply, state}
+  end
+
+  # Matches a pooled connection's peer `{ip, port}` against a close matcher.
+  defp peer_matches?({ip, _port}, {:peer_ip, ip}), do: true
+  defp peer_matches?(_peer, {:peer_ip, _ip}), do: false
+  defp peer_matches?(peer, {:peers, peers}), do: peer in peers
+  defp peer_matches?(_peer, _matcher), do: false
 
   # -- Sending --
 

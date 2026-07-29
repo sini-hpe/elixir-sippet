@@ -44,6 +44,20 @@ defmodule Sippet.Transports.TCP.Connection do
     GenServer.call(pid, {:send, iodata}, 10_000)
   end
 
+  @doc """
+  Force-closes the connection with an abortive (RST) close.
+
+  Sets `SO_LINGER = {true, 0}` before stopping so that `:gen_tcp.close/1`
+  (called from `terminate/2`) emits a TCP **RST** instead of a FIN. The local
+  socket is then freed immediately (→ CLOSED) instead of lingering in
+  `FIN_WAIT` — which matters when the peer is unreachable (e.g. the IPSec SA
+  carrying this connection has been torn down), where a clean FIN would never
+  be acknowledged.
+  """
+  def force_close(pid) do
+    GenServer.cast(pid, :force_close)
+  end
+
   @impl true
   def init(opts) do
     state = %__MODULE__{
@@ -63,6 +77,15 @@ defmodule Sippet.Transports.TCP.Connection do
   def handle_cast(:activate, state) do
     :inet.setopts(state.socket, [{:active, state.active_n}])
     {:noreply, state |> set_idle_timer() |> maybe_start_keepalive()}
+  end
+
+  def handle_cast(:force_close, state) do
+    # Abortive close: RST instead of FIN so the socket is freed immediately,
+    # even if the peer is unreachable. terminate/2 performs the actual close.
+    {ip, port} = state.peer
+    Logger.debug("TCP connection to #{stringify(ip, port)} force-closed (RST)")
+    _ = :inet.setopts(state.socket, [{:linger, {true, 0}}])
+    {:stop, :normal, state}
   end
 
   @impl true
