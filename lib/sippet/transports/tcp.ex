@@ -61,7 +61,8 @@ defmodule Sippet.Transports.TCP do
             keepalive_interval: @default_keepalive_interval,
             dev: nil,
             security_protected: false,
-            dscp: nil
+            dscp: nil,
+            egress_only: false
 
   @doc """
   Starts the TCP transport.
@@ -141,6 +142,17 @@ defmodule Sippet.Transports.TCP do
         _ -> nil
       end
 
+    # Egress-only transports (e.g. the P-CSCF IPSec protected client port,
+    # port_pc) send only: the P-CSCF opens outbound connections and receives
+    # responses / in-dialog requests back on them, but MUST NOT accept new
+    # inbound connections (TS 33.203 §7.4). We therefore do not create a
+    # listening socket; inbound SYNs are refused by the kernel (RST).
+    egress_only =
+      case Keyword.fetch(options, :egress_only) do
+        {:ok, true} -> true
+        _ -> false
+      end
+
     ip =
       case resolve_name(address, family) do
         {:ok, ip} ->
@@ -161,7 +173,8 @@ defmodule Sippet.Transports.TCP do
       keepalive_interval: keepalive_interval,
       dev: dev,
       security_protected: security_protected,
-      dscp: dscp
+      dscp: dscp,
+      egress_only: egress_only
     }
 
     GenServer.start_link(__MODULE__, {name, ip, port, family, transport_name, tcp_opts})
@@ -191,6 +204,51 @@ defmodule Sippet.Transports.TCP do
 
   @impl true
   def init({name, ip, port, family, transport_name, tcp_opts}) do
+    if Map.get(tcp_opts, :egress_only, false) do
+      init_egress_only(name, ip, port, family, transport_name, tcp_opts)
+    else
+      init_listening(name, ip, port, family, transport_name, tcp_opts)
+    end
+  end
+
+  # Egress-only transport: send-only. No listening socket is created, so the
+  # kernel refuses (RST) any inbound connection to this port. Outbound
+  # connections still bind the local address:port via connect/3's
+  # local_bind_opts, so P-CSCF-initiated flows and their return traffic
+  # (responses + in-dialog requests) work normally.
+  defp init_egress_only(name, ip, port, family, transport_name, tcp_opts) do
+    Sippet.register_transport(name, transport_name, :tcp, true)
+
+    Logger.debug(
+      "#{inspect(self())} started egress-only transport " <>
+        "#{stringify_ip(ip)}:#{port}/tcp (#{transport_name}) — inbound connections refused"
+    )
+
+    state = %__MODULE__{
+      listen_socket: nil,
+      local_ip: ip,
+      local_port: port,
+      family: family,
+      sippet: name,
+      transport_name: transport_name,
+      idle_timeout: tcp_opts.idle_timeout,
+      message_timeout: tcp_opts.message_timeout,
+      connect_timeout: tcp_opts.connect_timeout,
+      max_connections: tcp_opts.max_connections,
+      conns_per_peer: Map.get(tcp_opts, :conns_per_peer, @default_conns_per_peer),
+      keepalive_enabled: tcp_opts.keepalive_enabled,
+      keepalive_interval: tcp_opts.keepalive_interval,
+      dev: tcp_opts.dev,
+      security_protected: tcp_opts.security_protected,
+      dscp: tcp_opts.dscp,
+      egress_only: true
+    }
+
+    schedule_sweep()
+    {:ok, state}
+  end
+
+  defp init_listening(name, ip, port, family, transport_name, tcp_opts) do
     # Bind the listening socket synchronously so that start_link only returns
     # {:ok, pid} once the socket is actually bound and the acceptor is running.
     # A bind failure (bad port, address in use, bad device) fails the start
@@ -240,7 +298,8 @@ defmodule Sippet.Transports.TCP do
           keepalive_interval: tcp_opts.keepalive_interval,
           dev: tcp_opts.dev,
           security_protected: tcp_opts.security_protected,
-          dscp: tcp_opts.dscp
+          dscp: tcp_opts.dscp,
+          egress_only: false
         }
 
         # Start the acceptor loop in a linked process
@@ -401,6 +460,19 @@ defmodule Sippet.Transports.TCP do
     :gen_tcp.close(listen_socket)
 
     # Stop all connection processes
+    for {_peer, pids} <- connections, pid <- pids, Process.alive?(pid) do
+      GenServer.stop(pid, :normal, 5_000)
+    end
+  end
+
+  # Egress-only transport: no listen socket, but still drain any outbound
+  # connection processes on shutdown.
+  def terminate(reason, %{connections: connections}) do
+    Logger.debug(
+      "stopping egress-only tcp transport, reason: #{inspect(reason)}, " <>
+        "draining #{total_connections(connections)} connections"
+    )
+
     for {_peer, pids} <- connections, pid <- pids, Process.alive?(pid) do
       GenServer.stop(pid, :normal, 5_000)
     end
