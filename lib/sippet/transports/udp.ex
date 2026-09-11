@@ -111,17 +111,10 @@ defmodule Sippet.Transports.UDP do
 
   @impl true
   def init({name, ip, port, family, transport_name, dev, security_protected, dscp}) do
-    Sippet.register_transport(name, transport_name, :udp, false)
-
-    {:ok, nil,
-     {:continue, {name, ip, port, family, transport_name, dev, security_protected, dscp}}}
-  end
-
-  @impl true
-  def handle_continue(
-        {name, ip, port, family, transport_name, dev, security_protected, dscp},
-        nil
-      ) do
+    # Bind synchronously so start_link only returns {:ok, pid} once the socket
+    # is actually open. A bind failure stops the transport with {:open_failed,
+    # reason} and surfaces to the supervisor instead of being silently retried
+    # every 10s while the transport falsely reports a healthy status.
     sock_opts =
       [:binary, {:active, true}, {:ip, ip}, family] ++
         SocketPolicy.bind_to_device_opts(dev) ++ SocketPolicy.dscp_opts(dscp)
@@ -131,6 +124,10 @@ defmodule Sippet.Transports.UDP do
         if security_protected do
           SocketPolicy.apply_xfrm_policy(socket, family, :udp)
         end
+
+        # Register only after the socket is bound, so the router never routes
+        # to a transport whose socket is not ready.
+        Sippet.register_transport(name, transport_name, :udp, false)
 
         # Expose socket + family so any process can send directly (bypass GenServer)
         Registry.put_meta(name, {:udp_socket, transport_name}, {socket, family})
@@ -148,18 +145,15 @@ defmodule Sippet.Transports.UDP do
           dev: dev
         }
 
-        {:noreply, state}
+        {:ok, state}
 
       {:error, reason} ->
         Logger.error(
-          "#{inspect(self())} port #{port}/udp " <>
-            "#{inspect(reason)}, retrying in 10s..."
+          "#{inspect(self())} failed to bind #{stringify_ip(ip)}:#{port}/udp " <>
+            "(#{transport_name}): #{inspect(reason)}"
         )
 
-        Process.sleep(10_000)
-
-        {:noreply, nil,
-         {:continue, {name, ip, port, family, transport_name, dev, security_protected, dscp}}}
+        {:stop, {:open_failed, reason}}
     end
   end
 
@@ -236,6 +230,12 @@ defmodule Sippet.Transports.UDP do
       |> to_string()
 
     "#{address}:#{port}"
+  end
+
+  defp stringify_ip(ip) do
+    ip
+    |> :inet_parse.ntoa()
+    |> to_string()
   end
 
   defp stringify_hostport(host, port) do
