@@ -5,8 +5,12 @@ defmodule Sippet.Message.Test do
   alias Sippet.Message, as: Message
 
   test "build request" do
-    request = Message.build_request("REGISTER",
-        "sip:registrar.biloxi.com")
+    request =
+      Message.build_request(
+        "REGISTER",
+        "sip:registrar.biloxi.com"
+      )
+
     assert Message.request?(request)
   end
 
@@ -15,13 +19,38 @@ defmodule Sippet.Message.Test do
     assert Message.response?(response)
   end
 
+  test "Contact feature-tag parameters round-trip quoted" do
+    raw =
+      "REGISTER sip:ims.test SIP/2.0\r\n" <>
+        "Via: SIP/2.0/UDP 1.2.3.4;branch=z9hG4bKx;received=2001:db8::1\r\n" <>
+        "From: <sip:a@ims.test>;tag=1\r\nTo: <sip:a@ims.test>\r\n" <>
+        "Call-ID: c\r\nCSeq: 1 REGISTER\r\nMax-Forwards: 70\r\n" <>
+        "Contact: <sip:a@1.2.3.4>;+sip.instance=\"<urn:gsma:imei:1234>\";reg-id=1;" <>
+        "+g.3gpp.smsip;+g.3gpp.icsi-ref=\"urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel\";video\r\n" <>
+        "Content-Length: 0\r\n\r\n"
+
+    {:ok, msg} = Message.parse(raw)
+    wire = to_string(msg)
+
+    assert wire =~ ~s(;+sip.instance="<urn:gsma:imei:1234>")
+    assert wire =~ ~s(;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel")
+    assert wire =~ ~r/;\+g\.3gpp\.smsip(;|\r\n)/
+    assert wire =~ ~r/;video(;|\r\n)/
+    assert wire =~ ";reg-id=1"
+    assert wire =~ ";received=2001:db8::1"
+
+    {:ok, reparsed} = Message.parse(wire)
+    assert reparsed.headers.contact == msg.headers.contact
+  end
+
   test "put headers" do
-    response = Message.build_response(200)
-            |> Message.put_new_header(:a, [%{value: 2}])
-            |> Message.put_new_header(:a, [%{value: 99}])
-            |> Message.put_header_front(:a, %{value: 1})
-            |> Message.put_header_back(:a, %{value: 3})
-            |> Message.put_new_lazy_header(:b, fn() -> [%{value: 2}] end)
+    response =
+      Message.build_response(200)
+      |> Message.put_new_header(:a, [%{value: 2}])
+      |> Message.put_new_header(:a, [%{value: 99}])
+      |> Message.put_header_front(:a, %{value: 1})
+      |> Message.put_header_back(:a, %{value: 3})
+      |> Message.put_new_lazy_header(:b, fn -> [%{value: 2}] end)
 
     assert Message.has_header?(response, :a) == true
     assert Message.has_header?(response, :b) == true
@@ -30,18 +59,18 @@ defmodule Sippet.Message.Test do
     assert length(response.headers[:a]) == 3
     assert length(response.headers[:b]) == 1
 
-    assert List.foldr(response.headers[:a], [],
-        fn(x, acc) -> [x.value|acc] end) == [1, 2, 3]
+    assert List.foldr(response.headers[:a], [], fn x, acc -> [x.value | acc] end) == [1, 2, 3]
 
     assert Enum.at(response.headers[:b], 0).value == 2
   end
 
   test "delete headers" do
-    response = Message.build_response(200)
-            |> Message.put_new_header(:a, [%{value: 2}])
-            |> Message.put_header_front(:a, %{value: 1})
-            |> Message.put_header_back(:a, %{value: 3})
-            |> Message.put_new_header(:b, [%{value: 99}])
+    response =
+      Message.build_response(200)
+      |> Message.put_new_header(:a, [%{value: 2}])
+      |> Message.put_header_front(:a, %{value: 1})
+      |> Message.put_header_back(:a, %{value: 3})
+      |> Message.put_new_header(:b, [%{value: 99}])
 
     r1 = response |> Message.delete_header(:a)
     assert Message.has_header?(r1, :a) == false
@@ -55,10 +84,12 @@ defmodule Sippet.Message.Test do
     r4 = response |> Message.drop_headers([:a, :b])
     assert map_size(r4.headers) == 0
 
-    r5 = response
-         |> Message.delete_header(:c)
-         |> Message.delete_header_front(:d)
-         |> Message.delete_header_back(:e)
+    r5 =
+      response
+      |> Message.delete_header(:c)
+      |> Message.delete_header_front(:d)
+      |> Message.delete_header_back(:e)
+
     assert map_size(r5.headers) == 2
 
     r6 = response |> Message.drop_headers([:c, :d])
@@ -66,19 +97,23 @@ defmodule Sippet.Message.Test do
   end
 
   test "fetch headers" do
-    response = Message.build_response(200)
-            |> Message.put_new_header(:a, [%{value: 2}])
-            |> Message.put_header_front(:a, %{value: 1})
-            |> Message.put_header_back(:a, %{value: 3})
-            |> Message.put_header_back(:c, nil)
+    response =
+      Message.build_response(200)
+      |> Message.put_new_header(:a, [%{value: 2}])
+      |> Message.put_header_front(:a, %{value: 1})
+      |> Message.put_header_back(:a, %{value: 3})
+      |> Message.put_header_back(:c, nil)
 
     {:ok, values} = Message.fetch_header(response, :a)
-    assert List.foldr(values, [], fn(x, acc) -> [x.value|acc] end)
-        == [1, 2, 3]
-    assert Message.fetch_header_front(response, :a)
-        == {:ok, %{value: 1}}
-    assert Message.fetch_header_back(response, :a)
-        == {:ok, %{value: 3}}
+
+    assert List.foldr(values, [], fn x, acc -> [x.value | acc] end) ==
+             [1, 2, 3]
+
+    assert Message.fetch_header_front(response, :a) ==
+             {:ok, %{value: 1}}
+
+    assert Message.fetch_header_back(response, :a) ==
+             {:ok, %{value: 3}}
 
     assert Message.fetch_header(response, :c) == {:ok, []}
     assert Message.fetch_header_front(response, :c) == {:ok, nil}
@@ -90,19 +125,23 @@ defmodule Sippet.Message.Test do
   end
 
   test "fetch! headers" do
-    response = Message.build_response(200)
-            |> Message.put_new_header(:a, [%{value: 2}])
-            |> Message.put_header_front(:a, %{value: 1})
-            |> Message.put_header_back(:a, %{value: 3})
-            |> Message.put_header_back(:c, nil)
+    response =
+      Message.build_response(200)
+      |> Message.put_new_header(:a, [%{value: 2}])
+      |> Message.put_header_front(:a, %{value: 1})
+      |> Message.put_header_back(:a, %{value: 3})
+      |> Message.put_header_back(:c, nil)
 
     values = Message.fetch_header!(response, :a)
-    assert List.foldr(values, [], fn(x, acc) -> [x.value|acc] end)
-        == [1, 2, 3]
-    assert Message.fetch_header_front!(response, :a)
-        == %{value: 1}
-    assert Message.fetch_header_back!(response, :a)
-        == %{value: 3}
+
+    assert List.foldr(values, [], fn x, acc -> [x.value | acc] end) ==
+             [1, 2, 3]
+
+    assert Message.fetch_header_front!(response, :a) ==
+             %{value: 1}
+
+    assert Message.fetch_header_back!(response, :a) ==
+             %{value: 3}
 
     assert Message.fetch_header!(response, :c) == []
     assert Message.fetch_header_front!(response, :c) == nil
@@ -114,13 +153,14 @@ defmodule Sippet.Message.Test do
   end
 
   test "get headers" do
-    response = Message.build_response(200)
-            |> Message.put_new_header(:a, [%{value: 2}])
-            |> Message.put_header_front(:a, %{value: 1})
-            |> Message.put_header_back(:a, %{value: 3})
+    response =
+      Message.build_response(200)
+      |> Message.put_new_header(:a, [%{value: 2}])
+      |> Message.put_header_front(:a, %{value: 1})
+      |> Message.put_header_back(:a, %{value: 3})
 
     assert Message.get_header(response, :a)
-           |> List.foldr([], fn(x, acc) -> [x.value|acc] end) == [1, 2, 3]
+           |> List.foldr([], fn x, acc -> [x.value | acc] end) == [1, 2, 3]
 
     assert Message.get_header_front(response, :a) == %{value: 1}
     assert Message.get_header_back(response, :a) == %{value: 3}
@@ -135,47 +175,46 @@ defmodule Sippet.Message.Test do
   end
 
   test "update headers" do
-    response = Message.build_response(200)
-            |> Message.put_new_header(:a, [%{value: 2}])
-            |> Message.put_header_front(:a, %{value: 1})
-            |> Message.put_header_back(:a, %{value: 3})
+    response =
+      Message.build_response(200)
+      |> Message.put_new_header(:a, [%{value: 2}])
+      |> Message.put_header_front(:a, %{value: 1})
+      |> Message.put_header_back(:a, %{value: 3})
 
-    r1 = response |> Message.update_header(:a, [],
-        fn(values) ->
-            values |> List.foldr([], fn(x, acc) -> [%{x | value: x.value + 1} | acc] end)
-        end)
+    r1 =
+      response
+      |> Message.update_header(:a, [], fn values ->
+        values |> List.foldr([], fn x, acc -> [%{x | value: x.value + 1} | acc] end)
+      end)
+
     assert Message.get_header_front(r1, :a).value == 2
     assert Message.get_header_back(r1, :a).value == 4
 
-    r2 = response |> Message.update_header_front(:a, nil,
-        fn(x) -> %{x | value: 99} end)
+    r2 = response |> Message.update_header_front(:a, nil, fn x -> %{x | value: 99} end)
     assert Message.get_header_front(r2, :a).value == 99
 
-    r3 = response |> Message.update_header_back(:a, nil,
-        fn(x) -> %{x | value: 99} end)
+    r3 = response |> Message.update_header_back(:a, nil, fn x -> %{x | value: 99} end)
     assert Message.get_header_back(r3, :a).value == 99
 
-    r4 = response |> Message.update_header(:b, [%{value: 99}],
-        fn(values) -> values end)
+    r4 = response |> Message.update_header(:b, [%{value: 99}], fn values -> values end)
     assert Message.get_header(r4, :b) == [%{value: 99}]
 
-    r5 = response |> Message.update_header_front(:b, %{value: 99},
-        fn(values) -> values end)
+    r5 = response |> Message.update_header_front(:b, %{value: 99}, fn values -> values end)
     assert Message.get_header(r5, :b) == [%{value: 99}]
 
-    r6 = response |> Message.update_header_back(:b, %{value: 99},
-        fn(values) -> values end)
+    r6 = response |> Message.update_header_back(:b, %{value: 99}, fn values -> values end)
     assert Message.get_header(r6, :b) == [%{value: 99}]
   end
 
   test "pop headers" do
-    response = Message.build_response(200)
-            |> Message.put_new_header(:a, [%{value: 2}])
-            |> Message.put_header_front(:a, %{value: 1})
-            |> Message.put_header_back(:a, %{value: 3})
+    response =
+      Message.build_response(200)
+      |> Message.put_new_header(:a, [%{value: 2}])
+      |> Message.put_header_front(:a, %{value: 1})
+      |> Message.put_header_back(:a, %{value: 3})
 
     {values, r1} = Message.pop_header(response, :a)
-    assert List.foldr(values, [], fn(x, acc) -> [x.value|acc] end) == [1, 2, 3]
+    assert List.foldr(values, [], fn x, acc -> [x.value | acc] end) == [1, 2, 3]
     assert map_size(r1.headers) == 0
 
     {%{value: 1}, r2} = Message.pop_header_front(response, :a)
@@ -198,52 +237,70 @@ defmodule Sippet.Message.Test do
   end
 
   test "get and update headers" do
-    response = Message.build_response(200)
-            |> Message.put_new_header(:a, [%{value: 2}])
-            |> Message.put_header_front(:a, %{value: 1})
-            |> Message.put_header_back(:a, %{value: 3})
+    response =
+      Message.build_response(200)
+      |> Message.put_new_header(:a, [%{value: 2}])
+      |> Message.put_header_front(:a, %{value: 1})
+      |> Message.put_header_back(:a, %{value: 3})
 
-    {get, r1} = response
-                |> Message.get_and_update_header(:a,
-                    fn(current_values) ->
-                        {current_values, List.foldr(current_values, [],
-                            fn(x, acc) ->
-                                [%{value: x.value + 1} | acc]
-                            end)}
-                    end)
+    {get, r1} =
+      response
+      |> Message.get_and_update_header(
+        :a,
+        fn current_values ->
+          {current_values,
+           List.foldr(current_values, [], fn x, acc ->
+             [%{value: x.value + 1} | acc]
+           end)}
+        end
+      )
+
     assert Message.get_header_front(r1, :a).value == 2
     assert Message.get_header_back(r1, :a).value == 4
     assert get == Message.get_header(response, :a)
 
-    {_, r2} = response
-              |> Message.get_and_update_header_front(:a,
-                  fn(current_value) ->
-                      {current_value, %{value: 99}}
-                  end)
+    {_, r2} =
+      response
+      |> Message.get_and_update_header_front(
+        :a,
+        fn current_value ->
+          {current_value, %{value: 99}}
+        end
+      )
+
     assert Message.get_header(r2, :a)
-           |> List.foldr([], fn(x, acc) -> [x.value|acc] end) == [99, 2, 3]
+           |> List.foldr([], fn x, acc -> [x.value | acc] end) == [99, 2, 3]
 
-    {_, r3} = response
-              |> Message.get_and_update_header_back(:a,
-                  fn(current_value) ->
-                      {current_value, %{value: 99}}
-                  end)
+    {_, r3} =
+      response
+      |> Message.get_and_update_header_back(
+        :a,
+        fn current_value ->
+          {current_value, %{value: 99}}
+        end
+      )
+
     assert Message.get_header(r3, :a)
-           |> List.foldr([], fn(x, acc) -> [x.value|acc] end) == [1, 2, 99]
+           |> List.foldr([], fn x, acc -> [x.value | acc] end) == [1, 2, 99]
 
-    {_, r4} = response
-              |> Message.get_and_update_header_front(:b,
-                  fn(current_value) ->
-                      {current_value, nil}
-                  end)
+    {_, r4} =
+      response
+      |> Message.get_and_update_header_front(
+        :b,
+        fn current_value ->
+          {current_value, nil}
+        end
+      )
+
     assert Message.get_header(r4, :b)
-           |> List.foldr([], fn(x, acc) -> [x.value|acc] end) == []
+           |> List.foldr([], fn x, acc -> [x.value | acc] end) == []
 
-    {_, r5} = response
-              |> Message.get_and_update_header_front(:a, fn(_) -> :pop end)
+    {_, r5} =
+      response
+      |> Message.get_and_update_header_front(:a, fn _ -> :pop end)
+
     assert Message.get_header(r5, :a)
-           |> List.foldr([], fn(x, acc) -> [x.value|acc] end) == [2, 3]
-
+           |> List.foldr([], fn x, acc -> [x.value | acc] end) == [2, 3]
   end
 
   test "encoding via header" do
@@ -252,15 +309,16 @@ defmodule Sippet.Message.Test do
       INVITE sip:5531999921578@85.90.232.52 SIP/2.0
       Via: SIP/2.0/UDP 192.168.65.17:5566;branch=z9hG4bKMD3xTURX0heu
       Via: SIP/2.0/STOMP D6wU5SvE.invalid;rport=5672;received=192.168.65.30;branch=z9hG4bKRtAc6V4VeIuR
-      """ |> Message.parse!()
+      """
+      |> Message.parse!()
 
     message =
       "INVITE sip:5531999921578@85.90.232.52 SIP/2.0\r\n" <>
-      "Content-Length: 0\r\n" <>
-      "Via: SIP/2.0/UDP 192.168.65.17:5566;branch=z9hG4bKMD3xTURX0heu, " <>
-          "SIP/2.0/STOMP D6wU5SvE.invalid;rport=5672;received=192.168.65.30" <>
-          ";branch=z9hG4bKRtAc6V4VeIuR\r\n" <>
-      "\r\n"
+        "Content-Length: 0\r\n" <>
+        "Via: SIP/2.0/UDP 192.168.65.17:5566;branch=z9hG4bKMD3xTURX0heu, " <>
+        "SIP/2.0/STOMP D6wU5SvE.invalid;rport=5672;received=192.168.65.30" <>
+        ";branch=z9hG4bKRtAc6V4VeIuR\r\n" <>
+        "\r\n"
 
     assert message == req |> to_string
   end
@@ -270,13 +328,14 @@ defmodule Sippet.Message.Test do
       """
       INVITE sip:foo@bar.com SIP/2.0
       Via: SIP/2.0/UDP 205.205.74.6:5060;rport;branch=z9hG4bK-26320-1-0
-      """ |> Message.parse!()
+      """
+      |> Message.parse!()
 
     message =
       "INVITE sip:foo@bar.com SIP/2.0\r\n" <>
-      "Content-Length: 0\r\n" <>
-      "Via: SIP/2.0/UDP 205.205.74.6:5060;rport;branch=z9hG4bK-26320-1-0\r\n" <>
-      "\r\n"
+        "Content-Length: 0\r\n" <>
+        "Via: SIP/2.0/UDP 205.205.74.6:5060;rport;branch=z9hG4bK-26320-1-0\r\n" <>
+        "\r\n"
 
     assert message == req |> to_string
   end
@@ -291,6 +350,7 @@ defmodule Sippet.Message.Test do
     """
 
     parsed_request = Message.parse!(raw_request)
+
     expected_body = """
     v=0
     o=- 8789325071243167256 2 IN IP4 127.0.0.1
@@ -305,13 +365,14 @@ defmodule Sippet.Message.Test do
       CANCEL sip:bob@biloxi.com SIP/2.0
       Reason: X.int;reasoncode=0x0000030A;add-info=068C.0001.0001
       Reason: SIP;cause=200;text="Call Rejected By User"
-      """ |> Message.parse!()
+      """
+      |> Message.parse!()
 
     message =
       "CANCEL sip:bob@biloxi.com SIP/2.0\r\n" <>
-      "Content-Length: 0\r\n" <>
-      "Reason: X.int;reasoncode=0x0000030A;add-info=068C.0001.0001, " <>
-      "SIP;text=\"Call Rejected By User\";cause=200\r\n" <>
+        "Content-Length: 0\r\n" <>
+        "Reason: X.int;reasoncode=0x0000030A;add-info=068C.0001.0001, " <>
+        "SIP;text=\"Call Rejected By User\";cause=200\r\n" <>
         "\r\n"
 
     assert message == req |> to_string

@@ -1642,13 +1642,18 @@ defmodule Sippet.Message do
     do: do_parameters(tail, [";", name | result])
 
   defp do_parameters([{name, value} | tail], result),
-    do: do_parameters(tail, [";", name, "=", do_maybe_double_quote(value) | result])
+    do: do_parameters(tail, [";", name, "=", do_maybe_double_quote(name, value) | result])
 
-  defp do_maybe_double_quote(value) do
-    if String.contains?(value, [" ", "\t", "\""]) do
-      "\"" <> String.replace(value, "\"", "\\\"") <> "\""
-    else
-      value
+  # RFC 3840 feature-tag values ("+..." params) are always quoted; otherwise
+  # quote anything that is not a token or host (RFC 3261 gen-value).
+  defp do_maybe_double_quote(name, value) do
+    cond do
+      String.starts_with?(name, "+") or
+          not Regex.match?(~r/\A[A-Za-z0-9\-.!%*_+`'~:\[\]]+\z/, value) ->
+        "\"" <> String.replace(value, "\"", "\\\"") <> "\""
+
+      true ->
+        value
     end
   end
 
