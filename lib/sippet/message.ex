@@ -1397,9 +1397,9 @@ defmodule Sippet.Message do
   defp do_headers([{name, value} | tail], result),
     do: do_headers(tail, [do_header(name, value) | result])
 
-  defp do_header(name, value) do
+  defp do_header(key, value) do
     {name, multiple} =
-      case name do
+      case key do
         :accept -> {"Accept", true}
         :accept_encoding -> {"Accept-Encoding", true}
         :accept_language -> {"Accept-Language", true}
@@ -1474,7 +1474,7 @@ defmodule Sippet.Message do
     if multiple do
       [name, ": ", do_header_values(value, []), "\r\n"]
     else
-      do_one_per_line(name, value)
+      do_one_per_line(name, value, auth_mode(key))
     end
   end
 
@@ -1610,22 +1610,35 @@ defmodule Sippet.Message do
     ]
   end
 
-  defp do_one_per_line(name, %{} = value),
-    do: [name, ": ", do_one_per_line_value(value), "\r\n"]
+  # RFC 3261 section 25.1: challenges (digest-cln) and credentials (dig-resp)
+  # quote different parameters, e.g. `qop` is a quoted-string in a challenge
+  # but a token in credentials.
+  defp auth_mode(key) when key in [:www_authenticate, :proxy_authenticate], do: :challenge
+  defp auth_mode(key) when key in [:authorization, :proxy_authorization], do: :credentials
+  defp auth_mode(_), do: nil
 
-  defp do_one_per_line(name, values) when is_list(values),
-    do: do_one_per_line(name, values |> Enum.reverse(), [])
+  defp do_one_per_line(name, %{} = value, mode),
+    do: [name, ": ", do_one_per_line_value(value, mode), "\r\n"]
 
-  defp do_one_per_line(_, [], result), do: result
+  defp do_one_per_line(name, values, mode) when is_list(values),
+    do: do_one_per_line(name, values |> Enum.reverse(), mode, [])
 
-  defp do_one_per_line(name, [head | tail], result),
-    do: do_one_per_line(name, tail, [name, ": ", do_one_per_line_value(head), "\r\n" | result])
+  defp do_one_per_line(_, [], _mode, result), do: result
 
-  defp do_one_per_line_value(%{} = parameters),
+  defp do_one_per_line(name, [head | tail], mode, result),
+    do:
+      do_one_per_line(name, tail, mode, [
+        name,
+        ": ",
+        do_one_per_line_value(head, mode),
+        "\r\n" | result
+      ])
+
+  defp do_one_per_line_value(%{} = parameters, _mode),
     do: do_one_per_line_value(Map.to_list(parameters), [])
 
-  defp do_one_per_line_value({scheme, %{} = parameters}),
-    do: [scheme, " ", do_auth_parameters(parameters)]
+  defp do_one_per_line_value({scheme, %{} = parameters}, mode),
+    do: [scheme, " ", do_auth_parameters(parameters, mode)]
 
   defp do_one_per_line_value([], result), do: result
 
@@ -1663,24 +1676,33 @@ defmodule Sippet.Message do
   defp upcase_atom_or_string(s),
     do: if(is_atom(s), do: String.upcase(Atom.to_string(s)), else: s)
 
-  defp do_auth_parameters(%{} = parameters),
-    do: do_auth_parameters(Map.to_list(parameters), [])
+  # Parameters whose value is always a quoted-string (RFC 3261 section 25.1).
+  @challenge_quoted ["realm", "domain", "nonce", "opaque", "qop"]
+  @credentials_quoted ["username", "realm", "nonce", "uri", "response", "cnonce", "opaque"]
 
-  defp do_auth_parameters([], result), do: result |> Enum.reverse()
+  defp do_auth_parameters(%{} = parameters, mode) do
+    parameters
+    |> Map.to_list()
+    |> Enum.map(fn {name, value} -> [name, "=", do_auth_value(name, value, mode)] end)
+    |> Enum.intersperse(",")
+  end
 
-  defp do_auth_parameters([{name, value} | tail], [])
-       when name in ["username", "realm", "nonce", "uri", "response", "cnonce", "opaque"],
-       do: do_auth_parameters(tail, [[name, "=\"", value, "\""]])
+  defp do_auth_value(name, value, mode) do
+    if String.downcase(name) in auth_quoted(mode) or not token?(value) do
+      do_quoted_string(value)
+    else
+      value
+    end
+  end
 
-  defp do_auth_parameters([{name, value} | tail], []),
-    do: do_auth_parameters(tail, [[name, "=", value]])
+  defp auth_quoted(:challenge), do: @challenge_quoted
+  defp auth_quoted(_), do: @credentials_quoted
 
-  defp do_auth_parameters([{name, value} | tail], result)
-       when name in ["username", "realm", "nonce", "uri", "response", "cnonce", "opaque"],
-       do: do_auth_parameters(tail, [[",", name, "=\"", value, "\""] | result])
+  # RFC 3261 section 25.1 token.
+  defp token?(value), do: Regex.match?(~r/\A[A-Za-z0-9\-.!%*_+`'~]+\z/, value)
 
-  defp do_auth_parameters([{name, value} | tail], result),
-    do: do_auth_parameters(tail, [[",", name, "=", value] | result])
+  defp do_quoted_string(value),
+    do: ["\"", value |> String.replace("\\", "\\\\") |> String.replace("\"", "\\\""), "\""]
 
   @doc """
   Checks whether a message is valid.

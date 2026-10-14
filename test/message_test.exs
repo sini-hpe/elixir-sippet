@@ -377,4 +377,172 @@ defmodule Sippet.Message.Test do
 
     assert message == req |> to_string
   end
+
+  describe "auth header quoting (RFC 3261 section 25.1)" do
+    defp header_line(wire, name) do
+      wire
+      |> String.split("\r\n")
+      |> Enum.find(&String.starts_with?(&1, name <> ": "))
+    end
+
+    defp auth_params(line) do
+      [_name, _scheme, params] = String.split(line, " ", parts: 3)
+
+      params
+      |> String.split(",")
+      |> MapSet.new()
+    end
+
+    @challenge %{
+      "realm" => "ims.mnc001.mcc001.3gppnetwork.org",
+      "domain" => "sip:ims.test sip:other.test",
+      "nonce" => "L+8qJATjiDBcmaZrEG3BGaxDst0AjoAAQVEQa1b2yrc=",
+      "opaque" => "J32zlCUOH4H7gg7WG6hluA",
+      "algorithm" => "AKAv1-MD5",
+      "stale" => "FALSE",
+      "qop" => "auth"
+    }
+
+    @credentials %{
+      "username" => "user@ims.test",
+      "realm" => "ims.test",
+      "nonce" => "abc",
+      "uri" => "sip:ims.test",
+      "response" => "6629fae49393a05397450978507c4ef1",
+      "cnonce" => "0a4f113b",
+      "opaque" => "5ccc069c403ebaf9f0171e9517f40e41",
+      "algorithm" => "MD5",
+      "qop" => "auth",
+      "nc" => "00000001"
+    }
+
+    for {header, name} <- [www_authenticate: "WWW-Authenticate", proxy_authenticate: "Proxy-Authenticate"] do
+      test "#{name} quotes qop and other quoted-string params" do
+        wire =
+          Message.build_response(401)
+          |> Message.put_header(unquote(header), [{"Digest", @challenge}])
+          |> to_string()
+
+        line = header_line(wire, unquote(name))
+        assert String.starts_with?(line, unquote(name) <> ": Digest ")
+
+        assert auth_params(line) ==
+                 MapSet.new([
+                   ~s(realm="ims.mnc001.mcc001.3gppnetwork.org"),
+                   ~s(domain="sip:ims.test sip:other.test"),
+                   ~s(nonce="L+8qJATjiDBcmaZrEG3BGaxDst0AjoAAQVEQa1b2yrc="),
+                   ~s(opaque="J32zlCUOH4H7gg7WG6hluA"),
+                   "algorithm=AKAv1-MD5",
+                   "stale=FALSE",
+                   ~s(qop="auth")
+                 ])
+      end
+    end
+
+    for {header, name} <- [authorization: "Authorization", proxy_authorization: "Proxy-Authorization"] do
+      test "#{name} keeps qop and nc as tokens" do
+        wire =
+          Message.build_request("REGISTER", "sip:ims.test")
+          |> Message.put_header(unquote(header), [{"Digest", @credentials}])
+          |> to_string()
+
+        line = header_line(wire, unquote(name))
+        assert String.starts_with?(line, unquote(name) <> ": Digest ")
+
+        assert auth_params(line) ==
+                 MapSet.new([
+                   ~s(username="user@ims.test"),
+                   ~s(realm="ims.test"),
+                   ~s(nonce="abc"),
+                   ~s(uri="sip:ims.test"),
+                   ~s(response="6629fae49393a05397450978507c4ef1"),
+                   ~s(cnonce="0a4f113b"),
+                   ~s(opaque="5ccc069c403ebaf9f0171e9517f40e41"),
+                   "algorithm=MD5",
+                   "qop=auth",
+                   "nc=00000001"
+                 ])
+      end
+    end
+
+    test "multiple qop values are a single quoted-string in a challenge" do
+      wire =
+        Message.build_response(401)
+        |> Message.put_header(:www_authenticate, [
+          {"Digest", %{"realm" => "r", "nonce" => "n", "qop" => "auth,auth-int"}}
+        ])
+        |> to_string()
+
+      assert header_line(wire, "WWW-Authenticate") =~ ~s(qop="auth,auth-int")
+    end
+
+    test "parameter names are matched case-insensitively" do
+      wire =
+        Message.build_response(401)
+        |> Message.put_header(:www_authenticate, [{"Digest", %{"QOP" => "auth"}}])
+        |> to_string()
+
+      assert header_line(wire, "WWW-Authenticate") == ~s(WWW-Authenticate: Digest QOP="auth")
+    end
+
+    test "unknown auth-params are quoted only when not a token" do
+      wire =
+        Message.build_response(401)
+        |> Message.put_header(:www_authenticate, [
+          {"Digest", %{"ck" => "00112233445566778899aabbccddeeff", "x-note" => ~s(a "b" \\ c)}}
+        ])
+        |> to_string()
+
+      line = header_line(wire, "WWW-Authenticate")
+      assert line =~ "ck=00112233445566778899aabbccddeeff"
+      assert line =~ ~S(x-note="a \"b\" \\ c")
+
+      {:ok, reparsed} = Message.parse(wire)
+
+      assert [{"Digest", %{"x-note" => ~s(a "b" \\ c)}}] =
+               reparsed.headers.www_authenticate
+    end
+
+    test "IMS 401 challenge round-trips with quoted qop" do
+      raw =
+        "SIP/2.0 401 Unauthorized\r\n" <>
+          "Via: SIP/2.0/UDP 1.2.3.4;branch=z9hG4bKx\r\n" <>
+          "From: <sip:a@ims.test>;tag=1\r\nTo: <sip:a@ims.test>;tag=2\r\n" <>
+          "Call-ID: c\r\nCSeq: 1 REGISTER\r\n" <>
+          "WWW-Authenticate: Digest algorithm=AKAv1-MD5," <>
+          ~s(nonce="L+8qJATjiDBcmaZrEG3BGaxDst0AjoAAQVEQa1b2yrc=",) <>
+          ~s(opaque="J32zlCUOH4H7gg7WG6hluA",qop=auth,) <>
+          ~s(realm="ims.mnc001.mcc001.3gppnetwork.org"\r\n) <>
+          "Content-Length: 0\r\n\r\n"
+
+      {:ok, msg} = Message.parse(raw)
+      wire = to_string(msg)
+      line = header_line(wire, "WWW-Authenticate")
+
+      assert line =~ ~s(qop="auth")
+      assert line =~ ~s(realm="ims.mnc001.mcc001.3gppnetwork.org")
+      assert line =~ "algorithm=AKAv1-MD5"
+      refute line =~ "qop=auth"
+
+      {:ok, reparsed} = Message.parse(wire)
+      assert reparsed.headers.www_authenticate == msg.headers.www_authenticate
+    end
+
+    test "DigestAuth.make_response/4 emits a quoted qop" do
+      request =
+        Message.parse!(
+          "REGISTER sip:ims.test SIP/2.0\r\n" <>
+            "Via: SIP/2.0/UDP 1.2.3.4;branch=z9hG4bKx\r\n" <>
+            "From: <sip:a@ims.test>;tag=1\r\nTo: <sip:a@ims.test>\r\n" <>
+            "Call-ID: c\r\nCSeq: 1 REGISTER\r\nMax-Forwards: 70\r\n" <>
+            "Content-Length: 0\r\n\r\n"
+        )
+
+      {:ok, response} = Sippet.DigestAuth.make_response(request, 401, "ims.test")
+
+      line = response |> to_string() |> header_line("WWW-Authenticate")
+      assert line =~ ~s(qop="auth")
+      assert line =~ "algorithm=MD5"
+    end
+  end
 end
