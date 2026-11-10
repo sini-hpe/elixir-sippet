@@ -21,7 +21,8 @@ defmodule Sippet.Message do
             body: nil,
             target: nil,
             source: nil,
-            source_peer: nil
+            source_peer: nil,
+            fallback_target: nil
 
   @type uri :: URI.t()
 
@@ -144,7 +145,14 @@ defmodule Sippet.Message do
                 dport :: integer
               },
           source: atom | nil,
-          source_peer: {:inet.ip_address() | charlist() | binary(), :inet.port_number()} | nil
+          source_peer: {:inet.ip_address() | charlist() | binary(), :inet.port_number()} | nil,
+          fallback_target:
+            nil
+            | {
+                transport :: atom,
+                host :: binary,
+                dport :: integer
+              }
         }
 
   @type request :: %__MODULE__{
