@@ -695,6 +695,49 @@ ERL_NIF_TERM ParseCseq(ErlNifEnv* env,
       MakeLowerCaseExistingAtomOrString(env, method_name));
 }
 
+bool ParseDigits(const std::string& input, int* output) {
+  if (input.empty())
+    return false;
+  for (char c : input) {
+    if (c < '0' || c > '9')
+      return false;
+  }
+  return StringToInt(input, output);
+}
+
+// P5GM-3895: RFC 3262 section 7.2 defines
+//   RAck = "RAck" HCOLON response-num LWS CSeq-num LWS Method
+// The result is {response_num, "cseq_num Method"}, which round-trips through
+// the {integer, binary} serializer. The method is kept as received because
+// method names are case-sensitive.
+ERL_NIF_TERM ParseRack(ErlNifEnv* env,
+    std::string::const_iterator values_begin,
+    std::string::const_iterator values_end) {
+  Tokenizer tok(values_begin, values_end);
+  std::string::const_iterator response_num_start = tok.Skip(SIP_LWS);
+  if (tok.EndOfInput())
+    return enif_make_atom(env, "missing_response_num");
+  std::string response_num_string(response_num_start, tok.SkipNotIn(SIP_LWS));
+  int response_num = 0;
+  if (!ParseDigits(response_num_string, &response_num))
+    return enif_make_atom(env, "invalid_response_num");
+  std::string::const_iterator cseq_num_start = tok.Skip(SIP_LWS);
+  if (tok.EndOfInput())
+    return enif_make_atom(env, "missing_cseq_num");
+  std::string cseq_num_string(cseq_num_start, tok.SkipNotIn(SIP_LWS));
+  int cseq_num = 0;
+  if (!ParseDigits(cseq_num_string, &cseq_num))
+    return enif_make_atom(env, "invalid_cseq_num");
+  std::string::const_iterator method_start = tok.Skip(SIP_LWS);
+  if (tok.EndOfInput())
+    return enif_make_atom(env, "missing_method");
+  std::string cseq_and_method(std::to_string(cseq_num));
+  cseq_and_method.push_back(' ');
+  cseq_and_method.append(method_start, tok.SkipNotIn(SIP_LWS));
+  return enif_make_tuple2(env, enif_make_int(env, response_num),
+      MakeString(env, cseq_and_method));
+}
+
 ERL_NIF_TERM ParseDate(ErlNifEnv* env,
     std::string::const_iterator values_begin,
     std::string::const_iterator values_end) {

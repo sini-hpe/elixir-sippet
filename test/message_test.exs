@@ -378,6 +378,45 @@ defmodule Sippet.Message.Test do
     assert message == req |> to_string
   end
 
+  describe "RAck header (RFC 3262 section 7.2, P5GM-3895)" do
+    defp parse_rack(value) do
+      Message.parse("PRACK sip:bob@biloxi.com SIP/2.0\r\nRAck: #{value}\r\n\r\n")
+    end
+
+    test "keeps the method of the acknowledged request" do
+      assert {:ok, %{headers: %{rack: {9, "314 INVITE"}}}} = parse_rack("9 314 INVITE")
+      assert {:ok, %{headers: %{rack: {9, "314 BYE"}}}} = parse_rack("9 314 BYE")
+    end
+
+    test "tolerates extra linear white space" do
+      assert {:ok, %{headers: %{rack: {9, "314 INVITE"}}}} = parse_rack("9 \t 314   INVITE ")
+    end
+
+    test "rejects missing fields" do
+      assert {:error, {:error, :missing_response_num}} = parse_rack("")
+      assert {:error, {:error, :missing_cseq_num}} = parse_rack("9")
+      assert {:error, {:error, :missing_method}} = parse_rack("9 314")
+    end
+
+    test "rejects non-numeric response-num and CSeq-num" do
+      assert {:error, {:error, :invalid_response_num}} = parse_rack("x 314 INVITE")
+      assert {:error, {:error, :invalid_response_num}} = parse_rack("-9 314 INVITE")
+      assert {:error, {:error, :invalid_cseq_num}} = parse_rack("9 x INVITE")
+      assert {:error, {:error, :invalid_cseq_num}} = parse_rack("9 +314 INVITE")
+    end
+
+    test "round-trips through parse and serialization" do
+      rack =
+        Message.build_request(:prack, "sip:bob@biloxi.com")
+        |> Message.put_header(:rack, {9, "314 INVITE"})
+        |> to_string()
+
+      assert rack =~ "\r\nRAck: 9 314 INVITE\r\n"
+      assert {:ok, %{headers: %{rack: {9, "314 INVITE"}}} = parsed} = Message.parse(rack)
+      assert to_string(parsed) == rack
+    end
+  end
+
   describe "auth header quoting (RFC 3261 section 25.1)" do
     defp header_line(wire, name) do
       wire

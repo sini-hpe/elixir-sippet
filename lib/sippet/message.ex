@@ -85,6 +85,7 @@ defmodule Sippet.Message do
           optional(:proxy_authenticate) => [auth_params, ...],
           optional(:proxy_authorization) => [auth_params, ...],
           optional(:proxy_require) => [token, ...],
+          optional(:rack) => {response_num :: integer, cseq_num_and_method :: binary},
           optional(:reason) => {binary, params},
           optional(:record_route) => [name_uri_params, ...],
           optional(:reply_to) => name_uri_params,
