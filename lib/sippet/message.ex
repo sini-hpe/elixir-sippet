@@ -21,7 +21,8 @@ defmodule Sippet.Message do
             body: nil,
             target: nil,
             source: nil,
-            source_peer: nil
+            source_peer: nil,
+            fallback_target: nil
 
   @type uri :: URI.t()
 
@@ -84,6 +85,7 @@ defmodule Sippet.Message do
           optional(:proxy_authenticate) => [auth_params, ...],
           optional(:proxy_authorization) => [auth_params, ...],
           optional(:proxy_require) => [token, ...],
+          optional(:rack) => {response_num :: integer, cseq_num_and_method :: binary},
           optional(:reason) => {binary, params},
           optional(:record_route) => [name_uri_params, ...],
           optional(:reply_to) => name_uri_params,
@@ -144,7 +146,14 @@ defmodule Sippet.Message do
                 dport :: integer
               },
           source: atom | nil,
-          source_peer: {:inet.ip_address() | charlist() | binary(), :inet.port_number()} | nil
+          source_peer: {:inet.ip_address() | charlist() | binary(), :inet.port_number()} | nil,
+          fallback_target:
+            nil
+            | {
+                transport :: atom,
+                host :: binary,
+                dport :: integer
+              }
         }
 
   @type request :: %__MODULE__{

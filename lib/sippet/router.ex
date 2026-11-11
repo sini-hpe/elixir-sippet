@@ -275,6 +275,72 @@ defmodule Sippet.Router do
     result
   end
 
+  @doc """
+  Like `send_transport_message/3`, but never waits on a transport process.
+
+  UDP is still sent directly on the socket. Any other transport gets the
+  message by `GenServer.cast/2`, so a slow transport (e.g. a TCP connect that
+  hangs) cannot block the caller. Send failures are reported, as before,
+  through `receive_transport_error/3` when `key` is not `nil`.
+
+  Returns `{:error, :no_transport}` (also reported to the transaction) when no
+  live transport is registered under the destination's name, `:ok` otherwise.
+  Casts from one process keep their order, so messages towards a transport are
+  sent in the order they were submitted.
+  """
+  @spec send_transport_message_async(atom(), Message.t(), term()) :: :ok | {:error, term()}
+  def send_transport_message_async(sippet, message, key) do
+    {protocol, host, port} = get_destination(message)
+
+    result =
+      case Registry.meta(sippet, {:udp_socket, protocol}) do
+        {:ok, {socket, family}} ->
+          send_udp_direct(socket, family, sippet, message, host, port, key, protocol)
+          :ok
+
+        :error ->
+          case live_transport(sippet, protocol) do
+            {:ok, pid} ->
+              Logger.debug(fn ->
+                "[#{sippet}] send #{message_kind(message)} src=? => dst=#{stringify_hostport(host, port)} " <>
+                  "transport=#{protocol}/tcp #{inspect(key)} (async)"
+              end)
+
+              GenServer.cast(pid, {:send_message, message, host, port, key})
+              :ok
+
+            :error ->
+              Logger.error(
+                "[#{sippet}] no transport #{inspect(protocol)} to send #{message_kind(message)} " <>
+                  "to #{stringify_hostport(host, port)}, #{inspect(key)}"
+              )
+
+              if key != nil do
+                receive_transport_error(sippet, key, :no_transport)
+              end
+
+              {:error, :no_transport}
+          end
+      end
+
+    :telemetry.execute(@event_msg_sent, %{count: 1}, %{
+      sippet: sippet,
+      kind: message_kind(message),
+      method: message_method(message)
+    })
+
+    result
+  end
+
+  # Registry entries of a dead process are removed asynchronously, so also
+  # check the pid is alive: a cast to a dead pid would be lost silently.
+  defp live_transport(sippet, name) do
+    case Registry.lookup(sippet, {:transport, name}) do
+      [{pid, _} | _] -> if Process.alive?(pid), do: {:ok, pid}, else: :error
+      [] -> :error
+    end
+  end
+
   defp send_udp_direct(socket, family, sippet, message, host, port, key, protocol \\ :udp) do
     with {:ok, to_ip} <- host |> String.to_charlist() |> :inet.getaddr(family),
          iodata <- Message.to_iodata(message),
